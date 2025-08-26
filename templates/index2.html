@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ordinal Battle!</title>
+    <!-- Include the CSS file if needed -->
+    <!-- <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/styles.css') }}"> -->
+</head>
+<body>
+    <h2>Ordinal Battle!</h2>
+
+    <div>
+        <button id="resetButton">Reset Battle</button>
+        <button onclick="updateStats(1)">Submit for Ordinal 1</button>
+        <button onclick="updateStats(2)">Submit for Ordinal 2</button>
+
+        <input type="text" id="ordinal1_fightCodeLetter" placeholder="Enter fight code for Ordinal 1">
+        <input type="text" id="ordinal2_fightCodeLetter" placeholder="Enter fight code for Ordinal 2">
+        <h3>Ordinal 1:</h3>
+        HP: <input type="number" id="ordinal1_hp">
+        ATK: <input type="number" id="ordinal1_atk">
+        DEF: <input type="number" id="ordinal1_def">
+        SPEED: <input type="number" id="ordinal1_speed">
+        <input type="text" id="ordinal1_effect">
+       
+        Effect: <input type="text" id="ordinal1_effect_display" readonly>
+    </div>
+
+    <div>
+        <h3>Ordinal 2:</h3>
+        HP: <input type="number" id="ordinal2_hp">
+        ATK: <input type="number" id="ordinal2_atk">
+        DEF: <input type="number" id="ordinal2_def">
+        SPEED: <input type="number" id="ordinal2_speed">
+        <input type="text" id="ordinal2_effect">
+       
+        Effect: <input type="text" id="ordinal2_effect_display" readonly>
+    </div>
+
+    <button onclick="startBattle()">Start Battle</button>
+    <div id="consoleLog" style="border: 1px solid black; height: 300px; overflow: auto;"></div>
+
+    <!-- Include the JavaScript file from the specified path -->
+    <script src="/static/js/app2.js"></script>
+</body>
+</html>

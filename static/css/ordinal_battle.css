@@ -1,0 +1,35 @@
+body, html {
+    margin: 0;
+    padding: 0;
+    font-family: 'Courier New', Courier, monospace;
+    background-color: #913;
+    color: white;
+    overflow-x: hidden;
+}
+
+#container {
+    width: 100%;
+    padding: 20px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border: 5px solid #FFFF00;
+    border-radius: 20px;
+    box-shadow: 0 0 20px rgba(255, 255, 0, 0.5);
+}
+
+#main-content {
+    text-align: center;
+}
+
+button {
+    padding: 12px 24px;
+    margin: 8px;
+    cursor: pointer;
+    font-size: 16px;
+    border: 3px solid #00FFFF;
+    border-radius: 12px;
+    box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}

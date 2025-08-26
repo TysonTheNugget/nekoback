@@ -1,0 +1,6 @@
+Flask==3.0.3
+gunicorn==22.0.0
+pymongo==4.7.2
+Pillow==10.4.0
+requests==2.32.3
+cloudinary==1.41.0

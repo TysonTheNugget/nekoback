@@ -1,0 +1,70 @@
+body, html {
+  margin: 0;
+  padding: 0;
+  font-family: 'Courier New', Courier, monospace;
+  background-color: #913;
+  color: white;
+  overflow-x: hidden; /* Evita el desplazamiento horizontal */
+}
+
+/* Contenedor */
+#container {
+  width: 100%;
+  padding: 20px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  /* Contorno amarillo */
+  border: 5px solid #FFFF00;
+  border-radius: 20px;
+  box-shadow: 0 0 20px rgba(255, 255, 0, 0.5);
+}
+
+/* Contenido principal */
+#main-content {
+  text-align: center;
+}
+
+/* Imágenes */
+#randomImage {
+  max-width: 100%; /* Asegura que la imagen se ajuste a la pantalla */
+  height: auto; /* Mantener la relación de aspecto */
+  /* Contorno magenta */
+  border: 4px solid #FF00FF;
+  border-radius: 16px;
+  box-shadow: 0 0 10px rgba(255, 0, 255, 0.5);
+}
+
+/* Botones */
+button {
+  padding: 12px 24px;
+  margin: 8px;
+  cursor: pointer;
+  font-size: 16px;
+  /* Contorno cyan */
+  border: 3px solid #00FFFF;
+  border-radius: 12px;
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+/* Información de la imagen */
+#imageInfo {
+  width: 90%;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  text-align: left;
+  padding: 10px;
+  background: rgba(0,0,0,0.3);
+}
+
+/* Consulta de medios para pantallas más pequeñas */
+@media only screen and (max-width: 768px) {
+  body {
+    font-size: 14px;
+  }
+  button {
+    padding: 10px 20px;
+  }
+}

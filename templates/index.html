@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Usagis Mint Portal</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style2.css') }}">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/static/js/sats-connect-bundle.js"></script>
+    <style>
+      :root { 
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; 
+      }
+      html, body { height: 100%; }
+      body { 
+        margin: 0; 
+        background:#0b1220; 
+        color:#e6eefc; 
+        display:grid; 
+        place-items:center; 
+      }
+      .container { 
+        text-align:center; 
+        width:min(92vw, 680px); 
+      }
+      header h1 { 
+        margin:12px 0 18px; 
+      }
+      .image-container {
+        background:#0f1a2b;
+        border:1px solid #1e2a44;
+        border-radius:20px;
+        box-shadow:0 10px 30px rgba(0,0,0,.25);
+        margin:20px auto;   /* center horizontally */
+        display:grid;
+        place-items:center;
+        overflow:hidden;
+        width:320px;  /* upscale size */
+        height:320px;
+      }
+      #randomImage {
+        width:100%;
+        height:100%;
+        object-fit:contain;
+        image-rendering: pixelated; /* crisp scaling for pixel art */
+        image-rendering: crisp-edges;
+      }
+      .btn { 
+        margin-top:18px; 
+        padding:14px 22px; 
+        border-radius:999px; 
+        border:1px solid #2b3b60; 
+        background:#1a2850; 
+        color:#e6eefc; 
+        font-weight:700; 
+        cursor:pointer; 
+      }
+      .btn:disabled { 
+        opacity:.6; 
+        cursor:not-allowed; 
+      }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Neko Neko Btc</h1>
+    </header>
+    <button id="randomizeButton" class="btn">Randomize Image</button>
+    <button id="inscribeButton" class="btn" disabled>Inscribe Image</button>
+    
+    <!-- Centered image -->
+    <div class="image-container">
+        <img id="randomImage" src="" alt="Random Image">
+    </div>
+    
+    <div id="addressDisplay"></div>
+     <h1>Official Mint Coming Soon</h1>
+</div>
+
+<script>
+let fightCodeGlobal = '';
+let imageInfo = {};
+
+function loadRandomImage() {
+    $.ajax({
+        url: '/randomize',
+        type: 'POST',
+        success: function(response) {
+            let imageElement = $('#randomImage');
+            imageElement.attr('crossOrigin', 'anonymous');
+            imageElement.attr('src', response.imageUrl);
+
+            // Store info for DB
+            fightCodeGlobal = response.imageInfo.fightCode;
+            imageInfo = response.imageInfo;
+
+            // Enable inscription button
+            $('#inscribeButton').prop('disabled', false);
+        },
+        error: function(error) {
+            console.log("Error:", error);
+        }
+    });
+}
+
+// Randomize button uses same function
+$('#randomizeButton').click(loadRandomImage);
+
+// On page load → pick one random image immediately
+$(document).ready(function() {
+    loadRandomImage();
+});
+
+async function getImageAsBase64(url) {
+    const res = await fetch(url, { mode: 'cors', cache: 'no-cache' });
+    const blob = await res.blob();
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) {
+        bin += String.fromCharCode(bytes[i]);
+    }
+    return btoa(bin);
+}
+
+$('#inscribeButton').click(async function(){
+    const selectedBase64Image = await getImageAsBase64(document.getElementById('randomImage').src);
+
+    const appFeeAddress = "bc1p7w28we62hv7vnvm4jcqrn6e8y5y6qfvvuaq8at0jpj8jyq5lymusp5jsvq";
+    const appFee = 600;
+    const contentType = "image/png";
+    const payloadType = "BASE_64";
+
+    try {
+        await createInscription({
+            payload: {
+                network: { type: 'Mainnet' },
+                contentType,
+                content: selectedBase64Image,
+                payloadType,
+                appFeeAddress,
+                appFee,
+            },
+            onFinish: async (response) => {
+                document.getElementById('addressDisplay').innerHTML += `<br/>Transaction ID: ${response.txId}`;
+                try {
+                    await $.ajax({
+                        url: '/store_in_database',
+                        type: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({
+                            txId: response.txId,
+                            fightCode: fightCodeGlobal,
+                            background: imageInfo.background,
+                            body: imageInfo.body,
+                            boost: imageInfo.boost,
+                            eyes: imageInfo.eyes,
+                            face: imageInfo.face,
+                            effect: imageInfo.effect,
+                            holdings: imageInfo.holdings,
+                            mouth: imageInfo.mouth,
+                            hp: imageInfo.hp,
+                            speed: imageInfo.speed,
+                            def: imageInfo.def,
+                            atk: imageInfo.atk
+                        })
+                    });
+                    console.log('Data successfully sent to the server.');
+                } catch (error) {
+                    console.log("Failed to send data to server:", error);
+                }
+            },
+            onCancel: () => alert("Canceled"),
+        });
+    } catch (error) {
+        console.log("Error:", error);
+    }
+});
+</script>
+
+</body>
+</html>
