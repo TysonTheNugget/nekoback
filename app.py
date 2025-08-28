@@ -2,6 +2,9 @@ from flask import Flask, render_template, jsonify, request, send_file
 import os, random, time, hmac, hashlib, json, re, uuid
 import requests
 
+# ---- NEW: scheduler ----
+from apscheduler.schedulers.background import BackgroundScheduler
+
 app = Flask(__name__)
 
 # ========= TEST CONFIG (move to env in prod) =========
@@ -9,13 +12,14 @@ APP_FEE_ADDRESS = os.getenv("APP_FEE_ADDRESS", "bc1p7w28we62hv7vnvm4jcqrn6e8y5y6
 APP_FEE_SATS    = int(os.getenv("APP_FEE_SATS", "600"))
 APP_SECRET      = os.getenv("APP_SECRET", "local-dev-secret-change-me")
 BITCOIN_NETWORK = os.getenv("BITCOIN_NETWORK", "mainnet")  # or "testnet"
-INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
+INTERNAL_TOKEN  = os.environ.get("INTERNAL_TOKEN", "")
 
-
-UPSTASH_URL     = os.getenv("UPSTASH_REDIS_REST_URL", "https://game-raptor-60247.upstash.io")    # e.g. https://xxxx.upstash.io
-UPSTASH_TOKEN   = os.getenv("UPSTASH_REDIS_REST_TOKEN", "AetXAAIncDFhNWNhODAzMGU4MDc0ZTk4YWY1NDc3YzM0M2RmNjQwNHAxNjAyNDc")  # Bearer token
+UPSTASH_URL     = os.getenv("UPSTASH_REDIS_REST_URL", "https://game-raptor-60247.upstash.io")
+UPSTASH_TOKEN   = os.getenv("UPSTASH_REDIS_REST_TOKEN", "AetXAAIncDFhNWNhODAzMGU4MDc0ZTk4YWY1NDc3YzM0M2RmNjQwNHAxNjAyNDc")
 TOTAL_SUPPLY    = int(os.getenv("TOTAL_SUPPLY", "10000"))
-SERIAL_REGEX    = re.compile(r"\b(\d{10})\b")                 # adjust if your filenames differ
+SERIAL_REGEX    = re.compile(r"\b(\d{10})\b")
+# Optional toggle to enable/disable scheduler (default on)
+RUN_SCHEDULER   = os.getenv("RUN_SCHEDULER", "1") not in ("0", "false", "False", "")
 # =====================================================
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
@@ -24,7 +28,6 @@ os.makedirs(SINGLES_DIR, exist_ok=True)
 
 # ---------- Upstash helpers ----------
 def _rz_result(payload):
-    # Upstash REST wraps real value in {"result": ...}
     if isinstance(payload, dict) and "result" in payload:
         return payload["result"]
     return payload
@@ -44,26 +47,24 @@ def rz_post_pipeline(cmds):
                       timeout=20)
     r.raise_for_status()
     data = r.json()
-    # normalize each pipeline item to its .result
-    return [ _rz_result(item) for item in data ]
+    return [_rz_result(item) for item in data]
 
 def rz_exists(key):
-    res = rz_get(f"/exists/{key}")   # -> 0 or 1
+    res = rz_get(f"/exists/{key}")
     return int(res) == 1
 
 def rz_sismember(key, member):
-    res = rz_get(f"/sismember/{key}/{member}")  # -> 0 or 1
+    res = rz_get(f"/sismember/{key}/{member}")
     return int(res) == 1
 
 def rz_sadd(key, member):
-    return rz_get(f"/sadd/{key}/{member}")  # -> 0/1
+    return rz_get(f"/sadd/{key}/{member}")
 
 def rz_scard(key):
-    res = rz_get(f"/scard/{key}")  # -> integer
+    res = rz_get(f"/scard/{key}")
     return int(res)
 
 def rz_setex_nx(key, value, ttl_sec):
-    # SET key value NX EX ttl (pipeline); returns "OK" or null
     resp = rz_post_pipeline([["SET", key, value, "NX", "EX", str(ttl_sec)]])
     return bool(resp and resp[0] == "OK")
 
@@ -75,7 +76,6 @@ def rz_del(key):
 
 def rz_hgetall(key):
     res = rz_get(f"/hgetall/{key}")
-    # Upstash usually returns {"field":"value", ...} but can return flat list
     if isinstance(res, dict):
         return res
     if isinstance(res, list):
@@ -90,7 +90,6 @@ def rz_hgetall(key):
         return d
     return {}
 
-
 def rz_get_json(key):
     val = rz_get(f"/get/{key}")
     if val in (None, "null"):
@@ -101,7 +100,7 @@ def rz_get_json(key):
         return json.loads(val)
     except:
         return val
-        
+
 def scan_keys(match_pattern="tx:*", count=1000):
     """
     Yields lists of keys for SCAN pages.
@@ -123,18 +122,17 @@ def scan_keys(match_pattern="tx:*", count=1000):
         r.raise_for_status()
         data = r.json()
 
-        # normalize
         if isinstance(data, dict) and "result" in data:
             res = data["result"]
-            if isinstance(res, dict):                 # {"cursor": "...", "keys": [...]}
+            if isinstance(res, dict):
                 cursor = str(res.get("cursor", "0"))
                 keys = res.get("keys", [])
-            elif isinstance(res, list) and len(res) >= 2:  # ["cursor", ["k1","k2"]]
+            elif isinstance(res, list) and len(res) >= 2:
                 cursor = str(res[0])
                 keys = res[1]
             else:
                 raise ValueError(f"Unexpected SCAN result payload: {res}")
-        elif isinstance(data, list) and len(data) >= 2:    # ["cursor", ["k1","k2"]]
+        elif isinstance(data, list) and len(data) >= 2:
             cursor = str(data[0])
             keys = data[1]
         else:
@@ -145,7 +143,6 @@ def scan_keys(match_pattern="tx:*", count=1000):
             break
 
 def rz_hset_many(key: str, mapping: dict):
-    # Upstash HSET for multiple fields via pipeline
     flat = []
     for k, v in mapping.items():
         if isinstance(v, (dict, list)):
@@ -157,12 +154,12 @@ def rz_hset_many(key: str, mapping: dict):
     return resp and resp[0]
 
 def rz_ttl(key: str) -> int:
-    # returns seconds to expire; -2 if key doesn't exist; -1 if no expire
     try:
         res = rz_get(f"/ttl/{key}")
         return int(res)
     except Exception:
         return -2
+
 # ---------- app helpers ----------
 def sign_data(payload: str) -> str:
     return hmac.new(APP_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -174,7 +171,6 @@ def extract_serial_from_filename(fname: str):
     m = SERIAL_REGEX.search(fname)
     if m:
         return m.group(1)
-    # fallback: strip extension as serial-ish
     base = os.path.splitext(os.path.basename(fname))[0]
     return base
 
@@ -200,7 +196,6 @@ def tx_pays_app_fee(txid: str) -> bool:
     return total_to_app >= APP_FEE_SATS
 
 def is_serial_used(serial: str) -> bool:
-    # permanently consumed (confirmed OR unconfirmed inscription already seen)
     return rz_sismember("used_serials", serial)
 
 def is_serial_on_hold(serial: str) -> bool:
@@ -216,7 +211,6 @@ def create_reservation_id(serial: str, ttl=900) -> str:
     return rid
 
 def pick_available_filename(preferred_fname=None, max_attempts=100):
-    """Pick a filename whose serial is neither used nor on hold. If preferred is given, try it first."""
     files = list_pngs(SINGLES_DIR)
     random.shuffle(files)
 
@@ -238,11 +232,33 @@ def pick_available_filename(preferred_fname=None, max_attempts=100):
         return fname, serial
     raise RuntimeError("No available images to reserve")
 
+# ---------- core rebuild logic (factored for reuse) ----------
+def rebuild_used_serials_core():
+    """
+    Scan tx:* hashes and SADD their 'serial' field into used_serials.
+    Returns dict with counts.
+    """
+    added = 0
+    total = 0
+    for keys in scan_keys(match_pattern="tx:*", count=1000):
+        if not keys:
+            continue
+        for k in keys:
+            total += 1
+            row = rz_hgetall(k)
+            if not isinstance(row, dict):
+                continue
+            serial = row.get("serial")
+            if serial:
+                rz_sadd("used_serials", serial)
+                added += 1
+    return {"scanned_tx_keys": total, "added_to_used_serials": added}
+
 # ---------- routes ----------
 @app.route('/')
 def index():
     return render_template('index.html')
-    
+
 @app.route('/reservation_status', methods=['POST'])
 def reservation_status():
     data = request.get_json(force=True) or {}
@@ -250,14 +266,12 @@ def reservation_status():
     if not rid:
         return jsonify({"ok": False, "error": "Missing reservationId"}), 400
 
-    # If reservation still exists, we can retrieve its serial
     serial = rz_get(f"/get/resv:{rid}")
     if not serial:
-        # Either expired or already consumed by verify_and_store
         return jsonify({"ok": True, "active": False})
 
     used = is_serial_used(serial)
-    ttl = rz_ttl(f"hold:{serial}")  # how many seconds left on their 15-min hold
+    ttl = rz_ttl(f"hold:{serial}")
     return jsonify({"ok": True, "active": True, "serial": serial, "used": used, "ttl": ttl})
 
 @app.route('/file/<path:fname>')
@@ -267,10 +281,8 @@ def serve_original(fname):
 
 @app.route('/randomize', methods=['POST'])
 def randomize_image():
-    """Preview only: never shows used or currently-held images."""
     try:
         fname, serial = pick_available_filename()
-        full_path = os.path.join(SINGLES_DIR, fname)
         image_info = {
             'background': fname,
             'serial': serial,
@@ -282,25 +294,18 @@ def randomize_image():
 
 @app.route('/reserve_for_image', methods=['POST'])
 def reserve_for_image():
-    """Reserve the currently displayed image for 15 minutes (NX). If sniped, pick another free one."""
     data = request.get_json(force=True)
     fname_wanted = (data or {}).get("filename")
-    # holder id can be a lightweight token (session-ish); we generate one if not provided
     holder_id = (data or {}).get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon"
 
     try:
-        # 1) pick the requested file if still free; else pick a new one
         fname, serial = pick_available_filename(preferred_fname=fname_wanted)
-        # 2) try to put a hold with NX+EX
         ok = try_hold_serial(serial, holder_id, ttl=900)
         if not ok:
-            # Race condition: pick another
             fname, serial = pick_available_filename(preferred_fname=None)
             ok = try_hold_serial(serial, holder_id, ttl=900)
             if not ok:
                 raise RuntimeError("Could not reserve any image (race)")
-
-        # 3) create a short-lived reservation id -> serial
         rid = create_reservation_id(serial, ttl=900)
 
         return jsonify({
@@ -316,13 +321,11 @@ def reserve_for_image():
 
 @app.route('/supply', methods=['GET'])
 def supply():
-    """Show remaining / total (excluding temp holds)."""
     try:
         used = rz_scard("used_serials")
         remaining = max(0, TOTAL_SUPPLY - used)
         return jsonify({"remaining": remaining, "total": TOTAL_SUPPLY})
     except Exception as e:
-        # If Upstash not available, fall back to showing total
         return jsonify({"remaining": TOTAL_SUPPLY, "total": TOTAL_SUPPLY, "note": str(e)})
 
 @app.route('/prepare_inscription', methods=['POST'])
@@ -339,80 +342,103 @@ def prepare_inscription():
         "sig": sig,
         "network": "Mainnet" if BITCOIN_NETWORK.lower() == "mainnet" else "Testnet"
     })
-    
+
 @app.route('/admin/rebuild_used_serials', methods=['GET', 'POST'])
 def rebuild_used_serials():
     """
     Rebuild used_serials by scanning tx:* hashes and SADD-ing their 'serial' field.
-    Dev helper — do not expose without auth in production.
+    Dev helper — protected by internal token.
     """
     try:
-        # --- Token check ---
         token = request.headers.get("X-Internal-Token")
         if token != os.environ.get("INTERNAL_TOKEN"):
             return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-        added = 0
-        total = 0
-        for keys in scan_keys(match_pattern="tx:*", count=1000):
-            if not keys:
-                continue
-            for k in keys:
-                total += 1
-                row = rz_hgetall(k)  # already result-normalized by your helper
-                if not isinstance(row, dict):
-                    continue
-                serial = row.get("serial")
-                if serial:
-                    rz_sadd("used_serials", serial)
-                    added += 1
-        return jsonify({"ok": True, "scanned_tx_keys": total, "added_to_used_serials": added})
+        res = rebuild_used_serials_core()
+        return jsonify({"ok": True, **res})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-
 
 @app.route('/verify_and_store', methods=['POST'])
 def verify_and_store():
     data = request.get_json(force=True)
     txId = data.get('txId')
-    reservationId = data.get('reservationId')  # we created this when reserving
+    reservationId = data.get('reservationId')
     if not txId:
         return jsonify({"ok": False, "error": "Missing txId"}), 400
 
-    # 1) Verify the app fee landed to your fee address
     if not tx_pays_app_fee(txId):
         return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
 
-    # 2) If we have a reservation, get the serial we reserved
     serial = None
     if reservationId:
         try:
-            serial = rz_get(f"/get/resv:{reservationId}")  # returns string serial (via .result)
+            serial = rz_get(f"/get/resv:{reservationId}")
         except Exception:
             serial = None
 
-    # 3) Persist immediately: mark serial "used" and also write it into tx:<txId>
     if serial:
         try:
-            # permanently remove from pool
             rz_sadd("used_serials", serial)
-            # clear the 15-min hold & reservation token
             rz_del(f"hold:{serial}")
             rz_del(f"resv:{reservationId}")
-
-            # >>> THIS is the key line you were missing <<<
-            # write serial (and minimal pngText) straight into the tx hash
-            # (if the tx hash already exists from the scanner, this just fills the missing fields)
             rz_hset_many(f"tx:{txId}", {
                 "serial": serial,
-                # optional: give scanners something to parse later if needed
                 "pngText": json.dumps({"Serial": serial})
             })
-        except Exception as e:
-            # don't fail the whole request if the write has a hiccup
+        except Exception:
             pass
 
     return jsonify({"ok": True, "verifiedAt": int(time.time())})
 
+# ---------- NEW: periodic job + manual trigger ----------
+SCAN_URL = "https://nekonekobackendscan.vercel.app/api/scan"
+
+def periodic_tasks():
+    try:
+        # 1) Ping the Vercel scanner
+        try:
+            scan_res = requests.get(SCAN_URL, timeout=25)
+            print(f"[periodic] scan {SCAN_URL} -> {scan_res.status_code}")
+        except Exception as e:
+            print(f"[periodic] scan error: {e}")
+
+        # 2) Run the rebuild in-process (no HTTP/token needed)
+        try:
+            res = rebuild_used_serials_core()
+            print(f"[periodic] rebuild_used_serials_core -> {res}")
+        except Exception as e:
+            print(f"[periodic] rebuild error: {e}")
+
+    except Exception as e:
+        print(f"[periodic] unexpected error: {e}")
+
+@app.route('/admin/run_periodic_now', methods=['POST'])
+def run_periodic_now():
+    # Protect this manual trigger with the same internal token
+    token = request.headers.get("X-Internal-Token")
+    if token != os.environ.get("INTERNAL_TOKEN"):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    periodic_tasks()
+    return jsonify({"ok": True, "msg": "Periodic tasks executed once"})
+
+# (Optional) simple health
+@app.route('/healthz')
+def healthz():
+    return "ok", 200
+
+# ---------- Scheduler setup ----------
+scheduler = None
+if RUN_SCHEDULER:
+    try:
+        scheduler = BackgroundScheduler(daemon=True)
+        scheduler.add_job(periodic_tasks, 'interval', minutes=1, max_instances=1, coalesce=True)
+        scheduler.start()
+        print("[scheduler] started 1-minute periodic task")
+    except Exception as e:
+        print(f"[scheduler] failed to start: {e}")
+
 if __name__ == '__main__':
+    # For local dev: single process to avoid double scheduling
     app.run(debug=True)
