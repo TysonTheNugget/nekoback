@@ -4,14 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Neko BTC — Mint</title>
-
   <!-- Local Sats-Connect bundle -->
   <script src="{{ url_for('static', filename='sats-connect-bundle.js') }}"></script>
-
   <style>
     :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; }
     html, body { height: 100%; }
-    body { margin:0; background:#0b1220; color:#e6eefc; display:grid; place-items:center; }
+    body { margin:0; background:pink; color:#e6eefc; display:grid; place-items:center; }
     .container { text-align:center; width:min(92vw, 720px); }
     header h1 { margin:16px 0 6px; }
     .muted { opacity:.75; font-size:.9em; }
@@ -25,37 +23,52 @@
     .btn { margin-top:14px; padding:12px 18px; border-radius:999px; border:1px solid #2b3b60; background:#1a2850; color:#e6eefc; font-weight:700; cursor:pointer; }
     .btn:disabled { opacity:.6; cursor:not-allowed; }
     #status { margin-top:12px; min-height:1.2em; }
+    .flyer-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      z-index: -1;
+    }
+    .flyer {
+      position: absolute;
+      width: 128px; /* Matches canvas size (32 * 4) */
+      height: 128px;
+      object-fit: contain;
+      image-rendering: pixelated; /* Ensures crisp edges */
+      animation: flyAcross 10s linear infinite;
+    }
+    @keyframes flyAcross {
+      0% { transform: translateX(-120px); }
+      100% { transform: translateX(calc(100vw + 120px)); }
+    }
   </style>
 </head>
 <body>
+<div class="flyer-container" id="flyerContainer"></div>
 <div class="container">
   <header>
     <h1>Neko Neko</h1>
     <p class="muted">Mint Page</p>
     <div class="counter" id="supplyCounter">10,000 / 10,000</div>
   </header>
-
   <button id="mintButton" class="btn">Mint</button>
-
   <div class="image-container">
-    <!-- Slideshow image only (unrelated to minting) -->
     <img id="randomImage" src="" alt="Neko">
   </div>
-
   <div id="addressDisplay"></div>
   <div id="status"></div>
 </div>
-
 <script>
 let reservationId = null;
 let reservedFilename = null;
 let watchTimer = null;
 let slideshowTimer = null;
-
-const SLIDESHOW_MS = 5000;   // slow + chill
+const SLIDESHOW_MS = 5000;
 const $id = (x) => document.getElementById(x);
 function setStatus(msg) { $id('status').textContent = msg || ''; }
-
 async function refreshSupply() {
   try {
     const r = await fetch('/supply');
@@ -65,7 +78,6 @@ async function refreshSupply() {
     $id('supplyCounter').textContent = `${remaining.toLocaleString()} / ${total.toLocaleString()}`;
   } catch {}
 }
-
 function fadeSwapImage(newUrl) {
   const img = $id('randomImage');
   img.style.opacity = '0';
@@ -74,8 +86,6 @@ function fadeSwapImage(newUrl) {
   img.crossOrigin = 'anonymous';
   img.src = newUrl;
 }
-
-// Slideshow = random vibes only (no reservation, no linkage to mint)
 async function slideshowTick() {
   try {
     const res = await fetch('/randomize', { method: 'POST' });
@@ -87,9 +97,8 @@ async function slideshowTick() {
 function startSlideshow() {
   if (slideshowTimer) clearInterval(slideshowTimer);
   slideshowTimer = setInterval(slideshowTick, SLIDESHOW_MS);
-  slideshowTick(); // first frame
+  slideshowTick();
 }
-
 async function getImageAsBase64(url) {
   const res = await fetch(url, { cache: 'no-cache' });
   const blob = await res.blob();
@@ -99,8 +108,6 @@ async function getImageAsBase64(url) {
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   return btoa(bin);
 }
-
-// Watch reservation status silently (no TTL text)
 async function watchReservation() {
   if (!reservationId) return;
   try {
@@ -111,7 +118,6 @@ async function watchReservation() {
     });
     const j = await r.json();
     if (!j.ok) return;
-
     if (!j.active) {
       clearInterval(watchTimer); watchTimer = null;
       setStatus('Reservation ended.');
@@ -125,30 +131,17 @@ async function watchReservation() {
     }
   } catch (_) { /* ignore */ }
 }
-
-/**
- * Mint flow = (OLD behavior behind one button):
- * 1) /randomize  -> pick a random image (do NOT show or touch slideshow)
- * 2) /reserve_for_image with that filename (server may swap if race)
- * 3) fetch reserved image bytes, open wallet to inscribe
- * 4) /verify_and_store to confirm fee + mark used
- */
 async function startMintFlow() {
   const btn = $id('mintButton');
   try {
     setStatus('Picking a random Neko…');
-
-    // 1) Randomize (same as the old Randomize button)
     const randRes = await fetch('/randomize', { method: 'POST' });
     if (!randRes.ok) throw new Error('Randomize HTTP ' + randRes.status);
     const rand = await randRes.json();
     const filename = rand?.imageInfo?.background;
     const randomizedUrl = rand?.imageUrl;
     if (!filename) throw new Error('Randomize did not return a filename');
-
     setStatus('Reserving your Neko…');
-
-    // 2) Reserve that filename (server will swap if it got taken)
     const holdRes = await fetch('/reserve_for_image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
@@ -156,33 +149,22 @@ async function startMintFlow() {
     });
     const hold = await holdRes.json();
     if (!hold.ok) throw new Error(hold.error || 'Reserve failed');
-
-    reservationId    = hold.reservationId;
+    reservationId = hold.reservationId;
     reservedFilename = hold.filename || filename;
-    const reservedUrl = hold.imageUrl || randomizedUrl; // prefer server URL
-
-    // Start silent watcher
+    const reservedUrl = hold.imageUrl || randomizedUrl;
     if (watchTimer) clearInterval(watchTimer);
     watchTimer = setInterval(watchReservation, 10_000);
-
-    await refreshSupply(); // supply unchanged on hold
+    await refreshSupply();
     setStatus('Preparing inscription…');
-
-    // 3) App fee config
     const prepRes = await fetch('/prepare_inscription', { method: 'POST' });
     const prep = await prepRes.json();
     if (!prep.appFeeAddress || !prep.appFee) throw new Error('Server missing app fee config');
-
     if (!window.SatsConnect || typeof window.SatsConnect.createInscription !== 'function') {
       setStatus('Sats-Connect not available. Check sats-connect-bundle.js.');
       btn.disabled = false; return;
     }
-
-    // Fetch the reserved image bytes (don’t touch slideshow image)
     if (!reservedUrl) throw new Error('Reserved image URL missing');
     const base64Image = await getImageAsBase64(reservedUrl);
-
-    // 4) Wallet popup
     setStatus('Opening wallet…');
     await window.SatsConnect.createInscription({
       payload: {
@@ -199,11 +181,8 @@ async function startMintFlow() {
           (Array.isArray(resp?.txIds) ? resp.txIds[0] : null) ||
           (resp?.result && (resp.result.txId || resp.result.txid));
         if (!id) { setStatus('Wallet returned no txid.'); btn.disabled = false; return; }
-
         $id('addressDisplay').innerHTML = `<div>Transaction ID: ${id}</div>`;
         setStatus('Verifying payment…');
-
-        // 5) Verify & mark used (backend maps filename -> existing serial)
         const verifyRes = await fetch('/verify_and_store', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -219,24 +198,71 @@ async function startMintFlow() {
         btn.disabled = false;
       },
       onCancel: () => {
-        setStatus('Canceled.');
+        setStatus('Confirming..');
         btn.disabled = false;
       }
     });
-
   } catch (err) {
     console.error(err);
     setStatus(err.message || 'Error during mint.');
     $id('mintButton').disabled = false;
   }
 }
+async function createFlyers() {
+  const container = $id('flyerContainer');
+  const images = Array.from({length: 8}, (_, i) => `static/flyers/${i + 1}.png`);
+  const scaleFactor = 1.1; // Upscale 32x32 to 128x128 (4x)
 
-// Wire up UI
+  for (const src of images) {
+    try {
+      // Create image element and load the source
+      const img = new Image();
+      img.src = src;
+      img.crossOrigin = 'anonymous'; // If images are served from a different origin
+
+      // Wait for the image to load
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error(`Failed to load image: ${src}`));
+      });
+
+      // Create a canvas to upscale the image
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 32 * scaleFactor; // New width (128px)
+      canvas.height = 32 * scaleFactor; // New height (128px)
+
+      // Disable image smoothing to preserve pixel art look
+      ctx.imageSmoothingEnabled = false;
+
+      // Draw the original 32x32 image scaled up
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      // Create a new image element for the flyer
+      const flyerImg = document.createElement('img');
+      flyerImg.src = canvas.toDataURL('image/png'); // Use upscaled image as data URL
+      flyerImg.className = 'flyer';
+      flyerImg.style.top = `${Math.random() * (window.innerHeight - 100)}px`;
+      flyerImg.style.animationDelay = `${Math.random() * 10}s`;
+      flyerImg.style.width = `${100 * scaleFactor}px`; // Adjust size for display (128px)
+      flyerImg.style.height = `${100 * scaleFactor}px`; // Adjust size for display (128px)
+
+      // Optional: Add pixelated rendering for browsers
+      flyerImg.style.imageRendering = 'pixelated';
+
+      // Append to container
+      container.appendChild(flyerImg);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+}
 document.addEventListener('DOMContentLoaded', () => {
   $id('mintButton').addEventListener('click', startMintFlow);
   startSlideshow();
   refreshSupply();
   setInterval(refreshSupply, 15000);
+  createFlyers();
 });
 </script>
 </body>
