@@ -9,6 +9,8 @@ APP_FEE_ADDRESS = os.getenv("APP_FEE_ADDRESS", "bc1p7w28we62hv7vnvm4jcqrn6e8y5y6
 APP_FEE_SATS    = int(os.getenv("APP_FEE_SATS", "600"))
 APP_SECRET      = os.getenv("APP_SECRET", "local-dev-secret-change-me")
 BITCOIN_NETWORK = os.getenv("BITCOIN_NETWORK", "mainnet")  # or "testnet"
+INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
+
 
 UPSTASH_URL     = os.getenv("UPSTASH_REDIS_REST_URL", "https://game-raptor-60247.upstash.io")    # e.g. https://xxxx.upstash.io
 UPSTASH_TOKEN   = os.getenv("UPSTASH_REDIS_REST_TOKEN", "AetXAAIncDFhNWNhODAzMGU4MDc0ZTk4YWY1NDc3YzM0M2RmNjQwNHAxNjAyNDc")  # Bearer token
@@ -345,6 +347,11 @@ def rebuild_used_serials():
     Dev helper — do not expose without auth in production.
     """
     try:
+        # --- Token check ---
+        token = request.headers.get("X-Internal-Token")
+        if token != os.environ.get("INTERNAL_TOKEN"):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+
         added = 0
         total = 0
         for keys in scan_keys(match_pattern="tx:*", count=1000):
@@ -362,6 +369,7 @@ def rebuild_used_serials():
         return jsonify({"ok": True, "scanned_tx_keys": total, "added_to_used_serials": added})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.route('/verify_and_store', methods=['POST'])
 def verify_and_store():
