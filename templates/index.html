@@ -1,182 +1,257 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Usagis Mint Portal</title>
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style2.css') }}">
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="/static/js/sats-connect-bundle.js"></script>
-    <style>
-      :root { 
-        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; 
-      }
-      html, body { height: 100%; }
-      body { 
-        margin: 0; 
-        background:#0b1220; 
-        color:#e6eefc; 
-        display:grid; 
-        place-items:center; 
-      }
-      .container { 
-        text-align:center; 
-        width:min(92vw, 680px); 
-      }
-      header h1 { 
-        margin:12px 0 18px; 
-      }
-      .image-container {
-        background:#0f1a2b;
-        border:1px solid #1e2a44;
-        border-radius:20px;
-        box-shadow:0 10px 30px rgba(0,0,0,.25);
-        margin:20px auto;   /* center horizontally */
-        display:grid;
-        place-items:center;
-        overflow:hidden;
-        width:320px;  /* upscale size */
-        height:320px;
-      }
-      #randomImage {
-        width:100%;
-        height:100%;
-        object-fit:contain;
-        image-rendering: pixelated; /* crisp scaling for pixel art */
-        image-rendering: crisp-edges;
-      }
-      .btn { 
-        margin-top:18px; 
-        padding:14px 22px; 
-        border-radius:999px; 
-        border:1px solid #2b3b60; 
-        background:#1a2850; 
-        color:#e6eefc; 
-        font-weight:700; 
-        cursor:pointer; 
-      }
-      .btn:disabled { 
-        opacity:.6; 
-        cursor:not-allowed; 
-      }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neko BTC — Mint</title>
+
+  <!-- Local Sats-Connect bundle -->
+  <script src="{{ url_for('static', filename='sats-connect-bundle.js') }}"></script>
+
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; }
+    html, body { height: 100%; }
+    body { margin:0; background:#0b1220; color:#e6eefc; display:grid; place-items:center; }
+    .container { text-align:center; width:min(92vw, 720px); }
+    header h1 { margin:16px 0 6px; }
+    .muted { opacity:.75; font-size:.9em; }
+    .counter { margin-top:6px; font-weight:700; }
+    .image-container {
+      background:#0f1a2b; border:1px solid #1e2a44; border-radius:20px;
+      box-shadow:0 10px 30px rgba(0,0,0,.25); margin:20px auto; display:grid;
+      place-items:center; overflow:hidden; width:320px; height:320px;
+    }
+    #randomImage { width:100%; height:100%; object-fit:contain; image-rendering:pixelated; image-rendering:crisp-edges; }
+    .btn { margin-top:14px; padding:12px 18px; border-radius:999px; border:1px solid #2b3b60; background:#1a2850; color:#e6eefc; font-weight:700; cursor:pointer; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    #status { margin-top: 12px; min-height: 1.2em; }
+    details { margin-top: 12px; max-width: 720px; }
+    pre { text-align:left; padding:10px; background:#0f1a2b; border:1px solid #203257; border-radius:12px; white-space:pre-wrap; word-break:break-word; }
+    code { color:#a7c5ff; }
+  </style>
 </head>
 <body>
 <div class="container">
-    <header>
-        <h1>Neko Neko Btc</h1>
-    </header>
-    <button id="randomizeButton" class="btn">Randomize Image</button>
-    <button id="inscribeButton" class="btn" disabled>Inscribe Image</button>
-    
-    <!-- Centered image -->
-    <div class="image-container">
-        <img id="randomImage" src="" alt="Random Image">
-    </div>
-    
-    <div id="addressDisplay"></div>
-     <h1>10,000/10,000</h1>
+  <header>
+    <h1>Neko Neko</h1>
+    <p class="muted">Click Mint to reserve random Neko</p>
+    <div class="counter" id="supplyCounter">10,000 / 10,000</div>
+  </header>
+
+  <button id="randomizeButton" class="btn">Randomize Image</button>
+  <button id="inscribeButton" class="btn" disabled>Inscribe Image</button>
+
+  <div class="image-container">
+    <img id="randomImage" src="" alt="Random Image">
+  </div>
+
+  <div id="addressDisplay"></div>
+  <div id="status"></div>
+
+  <details>
+    <summary>Debug</summary>
+    <pre id="debugOut"></pre>
+  </details>
 </div>
 
 <script>
-let fightCodeGlobal = '';
-let imageInfo = {};
+let imageInfo = {};         // holds { background, ... } from /randomize
+let reservationId = null;   // set by /reserve_for_image
+let reservedFilename = null;// filename locked by reservation
+let watchTimer = null;      // interval id for /reservation_status watcher
 
-function loadRandomImage() {
-    $.ajax({
-        url: '/randomize',
-        type: 'POST',
-        success: function(response) {
-            let imageElement = $('#randomImage');
-            imageElement.attr('crossOrigin', 'anonymous');
-            imageElement.attr('src', response.imageUrl);
-
-            // Store info for DB
-            fightCodeGlobal = response.imageInfo.fightCode;
-            imageInfo = response.imageInfo;
-
-            // Enable inscription button
-            $('#inscribeButton').prop('disabled', false);
-        },
-        error: function(error) {
-            console.log("Error:", error);
-        }
-    });
+const $id = (x) => document.getElementById(x);
+function setStatus(msg) { $id('status').textContent = msg || ''; }
+function logDebug(label, obj) {
+  const el = $id('debugOut');
+  el.textContent += `\n=== ${label} ===\n` + (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) + "\n";
 }
 
-// Randomize button uses same function
-$('#randomizeButton').click(loadRandomImage);
+async function refreshSupply() {
+  try {
+    const r = await fetch('/supply');
+    const j = await r.json();
+    const remaining = j.remaining ?? 0;
+    const total = j.total ?? 10000;
+    $id('supplyCounter').textContent = `${remaining.toLocaleString()} / ${total.toLocaleString()}`;
+  } catch {}
+}
 
-// On page load → pick one random image immediately
-$(document).ready(function() {
-    loadRandomImage();
-});
+async function loadRandomImage() {
+  try {
+    const res = await fetch('/randomize', { method: 'POST' });
+    if (!res.ok) throw new Error('Randomize HTTP ' + res.status);
+    const response = await res.json();
+
+    const img = $id('randomImage');
+    img.crossOrigin = 'anonymous';
+    img.src = response.imageUrl;
+
+    imageInfo = response.imageInfo || {};
+    reservationId = null;       // clear any prior hold
+    reservedFilename = null;    // clear any prior hold
+    if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+    $id('inscribeButton').disabled = false;
+    setStatus('');
+  } catch (e) {
+    console.error(e);
+    setStatus('Failed to load image.');
+    logDebug('RANDOMIZE_ERROR', String(e));
+  }
+}
 
 async function getImageAsBase64(url) {
-    const res = await fetch(url, { mode: 'cors', cache: 'no-cache' });
-    const blob = await res.blob();
-    const buf = await blob.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let bin = '';
-    for (let i = 0; i < bytes.length; i++) {
-        bin += String.fromCharCode(bytes[i]);
-    }
-    return btoa(bin);
+  const res = await fetch(url, { cache: 'no-cache' });
+  const blob = await res.blob();
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
 }
 
-$('#inscribeButton').click(async function(){
-    const selectedBase64Image = await getImageAsBase64(document.getElementById('randomImage').src);
+/**
+ * Reserve the currently displayed image for 15 minutes and start a 10s watcher
+ * that polls /reservation_status to update the UI and detect consumption/expiry.
+ * IMPORTANT: We do NOT create or assign a "serial" here — backend maps filename -> existing serial.
+ */
+async function reserveCurrentImage() {
+  const filename = (imageInfo && imageInfo.background) || null;
+  if (!filename) throw new Error('No filename available from /randomize');
 
-    const appFeeAddress = "bc1p7w28we62hv7vnvm4jcqrn6e8y5y6qfvvuaq8at0jpj8jyq5lymusp5jsvq";
-    const appFee = 600;
-    const contentType = "image/png";
-    const payloadType = "BASE_64";
+  const res = await fetch('/reserve_for_image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
+    body: JSON.stringify({ filename })
+  });
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || 'Reserve failed');
 
-    try {
-        await createInscription({
-            payload: {
-                network: { type: 'Mainnet' },
-                contentType,
-                content: selectedBase64Image,
-                payloadType,
-                appFeeAddress,
-                appFee,
-            },
-            onFinish: async (response) => {
-                document.getElementById('addressDisplay').innerHTML += `<br/>Transaction ID: ${response.txId}`;
-                try {
-                    await $.ajax({
-                        url: '/store_in_database',
-                        type: 'POST',
-                        contentType: 'application/json',
-                        data: JSON.stringify({
-                            txId: response.txId,
-                            fightCode: fightCodeGlobal,
-                            background: imageInfo.background,
-                            body: imageInfo.body,
-                            boost: imageInfo.boost,
-                            eyes: imageInfo.eyes,
-                            face: imageInfo.face,
-                            effect: imageInfo.effect,
-                            holdings: imageInfo.holdings,
-                            mouth: imageInfo.mouth,
-                            hp: imageInfo.hp,
-                            speed: imageInfo.speed,
-                            def: imageInfo.def,
-                            atk: imageInfo.atk
-                        })
-                    });
-                    console.log('Data successfully sent to the server.');
-                } catch (error) {
-                    console.log("Failed to send data to server:", error);
-                }
-            },
-            onCancel: () => alert("Canceled"),
-        });
-    } catch (error) {
-        console.log("Error:", error);
+  // Server may reassign a different free image if requested one was just taken:
+  reservationId     = j.reservationId;
+  reservedFilename  = j.filename || filename;
+
+  // Ensure the displayed image matches what we actually reserved:
+  if (j.imageUrl) $id('randomImage').src = j.imageUrl;
+
+  // start 10s watcher during the 15-min window
+  if (watchTimer) clearInterval(watchTimer);
+  watchTimer = setInterval(watchReservation, 10_000);
+
+  setStatus('Reserved. Checking status…');
+  return j;
+}
+
+// Poll backend to see if reservation is still active/used, and update the UI.
+async function watchReservation() {
+  if (!reservationId) return;
+  try {
+    const r = await fetch('/reservation_status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reservationId })
+    });
+    const j = await r.json();
+    if (!j.ok) return;
+
+    if (!j.active) {
+      // reservation expired or was consumed without us noticing
+      clearInterval(watchTimer); watchTimer = null;
+      setStatus('Reservation ended.');
+      return;
     }
+
+    if (j.used) {
+      clearInterval(watchTimer); watchTimer = null;
+      setStatus('Mint confirmed ✔');
+      await refreshSupply(); // counter drops immediately
+      return;
+    }
+
+    if (typeof j.ttl === 'number' && j.ttl >= 0) {
+      setStatus(`Reserved. Expires in ${j.ttl}s…`);
+    }
+  } catch (e) {
+    // ignore transient failures
+  }
+}
+
+async function startInscribeFlow() {
+  try {
+    setStatus('Reserving…');
+    await reserveCurrentImage();        // 15-min collision-proof hold (starts watcher)
+    await refreshSupply();              // supply unchanged on hold
+
+    setStatus('Preparing…');
+    // 1) Fee & address from backend
+    const prepRes = await fetch('/prepare_inscription', { method: 'POST' });
+    const prep = await prepRes.json();
+    if (!prep.appFeeAddress || !prep.appFee) throw new Error('Server missing app fee config');
+
+    if (!window.SatsConnect || typeof window.SatsConnect.createInscription !== 'function') {
+      setStatus('Sats-Connect not available. Check sats-connect-bundle.js.');
+      logDebug('SATS_CONNECT', 'window.SatsConnect missing createInscription');
+      return;
+    }
+
+    // 2) Grab image as Base64 (we don't inject any new metadata here)
+    const base64Image = await getImageAsBase64($id('randomImage').src);
+
+    // 3) Open Xverse popup
+    setStatus('Opening wallet…');
+    await window.SatsConnect.createInscription({
+      payload: {
+        network: { type: prep.network || 'Mainnet' },
+        contentType: 'image/png',
+        content: base64Image,
+        payloadType: 'BASE_64',
+        appFeeAddress: prep.appFeeAddress,
+        appFee: prep.appFee
+      },
+      onFinish: async (resp) => {
+        logDebug('FINISH', resp);
+        const id =
+          resp?.txId || resp?.txid || resp?.revealTxId || resp?.commitTxId ||
+          (Array.isArray(resp?.txIds) ? resp.txIds[0] : null) ||
+          (resp?.result && (resp.result.txId || resp.result.txid));
+        if (!id) { setStatus('Wallet returned no txid.'); return; }
+
+        $id('addressDisplay').innerHTML = `<div>Transaction ID: ${id}</div>`;
+        setStatus('Verifying payment…');
+
+        // 4) Server verifies fee and permanently marks the reserved filename's serial as "used"
+        //    (Backend should map reservedFilename -> existing serial in your dataset.)
+        const verifyRes = await fetch('/verify_and_store', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ txId: id, reservationId, filename: reservedFilename })
+        });
+        const verify = await verifyRes.json();
+        if (verify.ok) {
+          setStatus('Verified ✔');
+          await refreshSupply();  // now the counter drops, since serial moved to used
+        } else {
+          setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
+        }
+      },
+      onCancel: () => setStatus('Canceled.')
+    });
+
+  } catch (err) {
+    console.error(err);
+    setStatus(err.message || 'Error starting inscription.');
+    logDebug('ERROR', String(err));
+  }
+}
+
+// Wire up UI
+document.addEventListener('DOMContentLoaded', () => {
+  $id('randomizeButton').addEventListener('click', loadRandomImage);
+  $id('inscribeButton').addEventListener('click', startInscribeFlow);
+  loadRandomImage();
+  refreshSupply();
+  setInterval(refreshSupply, 15000);
 });
 </script>
-
 </body>
 </html>

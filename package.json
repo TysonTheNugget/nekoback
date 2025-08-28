@@ -1,0 +1,14 @@
+{
+  "name": "neko-mint",
+  "private": true,
+  "scripts": {
+    "build:wallet": "webpack --config webpack.config.js"
+  },
+  "devDependencies": {
+    "webpack": "^5.94.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "sats-connect": "^1.0.0"
+  }
+}
