@@ -21,51 +21,40 @@
       box-shadow:0 10px 30px rgba(0,0,0,.25); margin:20px auto; display:grid;
       place-items:center; overflow:hidden; width:320px; height:320px;
     }
-    #randomImage { width:100%; height:100%; object-fit:contain; image-rendering:pixelated; image-rendering:crisp-edges; }
+    #randomImage { width:100%; height:100%; object-fit:contain; image-rendering:pixelated; image-rendering:crisp-edges; transition:opacity .5s ease; }
     .btn { margin-top:14px; padding:12px 18px; border-radius:999px; border:1px solid #2b3b60; background:#1a2850; color:#e6eefc; font-weight:700; cursor:pointer; }
     .btn:disabled { opacity:.6; cursor:not-allowed; }
-    #status { margin-top: 12px; min-height: 1.2em; }
-    details { margin-top: 12px; max-width: 720px; }
-    pre { text-align:left; padding:10px; background:#0f1a2b; border:1px solid #203257; border-radius:12px; white-space:pre-wrap; word-break:break-word; }
-    code { color:#a7c5ff; }
+    #status { margin-top:12px; min-height:1.2em; }
   </style>
 </head>
 <body>
 <div class="container">
   <header>
     <h1>Neko Neko</h1>
-    <p class="muted">Click Mint to reserve random Neko</p>
+    <p class="muted">Mint Page</p>
     <div class="counter" id="supplyCounter">10,000 / 10,000</div>
   </header>
 
-  <button id="randomizeButton" class="btn">Randomize Image</button>
-  <button id="inscribeButton" class="btn" disabled>Inscribe Image</button>
+  <button id="mintButton" class="btn">Mint</button>
 
   <div class="image-container">
-    <img id="randomImage" src="" alt="Random Image">
+    <!-- Slideshow image only (unrelated to minting) -->
+    <img id="randomImage" src="" alt="Neko">
   </div>
 
   <div id="addressDisplay"></div>
   <div id="status"></div>
-
-  <details>
-    <summary>Debug</summary>
-    <pre id="debugOut"></pre>
-  </details>
 </div>
 
 <script>
-let imageInfo = {};         // holds { background, ... } from /randomize
-let reservationId = null;   // set by /reserve_for_image
-let reservedFilename = null;// filename locked by reservation
-let watchTimer = null;      // interval id for /reservation_status watcher
+let reservationId = null;
+let reservedFilename = null;
+let watchTimer = null;
+let slideshowTimer = null;
 
+const SLIDESHOW_MS = 5000;   // slow + chill
 const $id = (x) => document.getElementById(x);
 function setStatus(msg) { $id('status').textContent = msg || ''; }
-function logDebug(label, obj) {
-  const el = $id('debugOut');
-  el.textContent += `\n=== ${label} ===\n` + (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) + "\n";
-}
 
 async function refreshSupply() {
   try {
@@ -77,27 +66,28 @@ async function refreshSupply() {
   } catch {}
 }
 
-async function loadRandomImage() {
+function fadeSwapImage(newUrl) {
+  const img = $id('randomImage');
+  img.style.opacity = '0';
+  const onLoad = () => { img.style.opacity = '1'; img.removeEventListener('load', onLoad); };
+  img.addEventListener('load', onLoad);
+  img.crossOrigin = 'anonymous';
+  img.src = newUrl;
+}
+
+// Slideshow = random vibes only (no reservation, no linkage to mint)
+async function slideshowTick() {
   try {
     const res = await fetch('/randomize', { method: 'POST' });
     if (!res.ok) throw new Error('Randomize HTTP ' + res.status);
     const response = await res.json();
-
-    const img = $id('randomImage');
-    img.crossOrigin = 'anonymous';
-    img.src = response.imageUrl;
-
-    imageInfo = response.imageInfo || {};
-    reservationId = null;       // clear any prior hold
-    reservedFilename = null;    // clear any prior hold
-    if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
-    $id('inscribeButton').disabled = false;
-    setStatus('');
-  } catch (e) {
-    console.error(e);
-    setStatus('Failed to load image.');
-    logDebug('RANDOMIZE_ERROR', String(e));
-  }
+    if (response.imageUrl) fadeSwapImage(response.imageUrl);
+  } catch (_) { /* ignore */ }
+}
+function startSlideshow() {
+  if (slideshowTimer) clearInterval(slideshowTimer);
+  slideshowTimer = setInterval(slideshowTick, SLIDESHOW_MS);
+  slideshowTick(); // first frame
 }
 
 async function getImageAsBase64(url) {
@@ -110,39 +100,7 @@ async function getImageAsBase64(url) {
   return btoa(bin);
 }
 
-/**
- * Reserve the currently displayed image for 15 minutes and start a 10s watcher
- * that polls /reservation_status to update the UI and detect consumption/expiry.
- * IMPORTANT: We do NOT create or assign a "serial" here — backend maps filename -> existing serial.
- */
-async function reserveCurrentImage() {
-  const filename = (imageInfo && imageInfo.background) || null;
-  if (!filename) throw new Error('No filename available from /randomize');
-
-  const res = await fetch('/reserve_for_image', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
-    body: JSON.stringify({ filename })
-  });
-  const j = await res.json();
-  if (!j.ok) throw new Error(j.error || 'Reserve failed');
-
-  // Server may reassign a different free image if requested one was just taken:
-  reservationId     = j.reservationId;
-  reservedFilename  = j.filename || filename;
-
-  // Ensure the displayed image matches what we actually reserved:
-  if (j.imageUrl) $id('randomImage').src = j.imageUrl;
-
-  // start 10s watcher during the 15-min window
-  if (watchTimer) clearInterval(watchTimer);
-  watchTimer = setInterval(watchReservation, 10_000);
-
-  setStatus('Reserved. Checking status…');
-  return j;
-}
-
-// Poll backend to see if reservation is still active/used, and update the UI.
+// Watch reservation status silently (no TTL text)
 async function watchReservation() {
   if (!reservationId) return;
   try {
@@ -155,49 +113,76 @@ async function watchReservation() {
     if (!j.ok) return;
 
     if (!j.active) {
-      // reservation expired or was consumed without us noticing
       clearInterval(watchTimer); watchTimer = null;
       setStatus('Reservation ended.');
       return;
     }
-
     if (j.used) {
       clearInterval(watchTimer); watchTimer = null;
       setStatus('Mint confirmed ✔');
-      await refreshSupply(); // counter drops immediately
+      await refreshSupply();
       return;
     }
-
-    if (typeof j.ttl === 'number' && j.ttl >= 0) {
-      setStatus(`Reserved. Expires in ${j.ttl}s…`);
-    }
-  } catch (e) {
-    // ignore transient failures
-  }
+  } catch (_) { /* ignore */ }
 }
 
-async function startInscribeFlow() {
+/**
+ * Mint flow = (OLD behavior behind one button):
+ * 1) /randomize  -> pick a random image (do NOT show or touch slideshow)
+ * 2) /reserve_for_image with that filename (server may swap if race)
+ * 3) fetch reserved image bytes, open wallet to inscribe
+ * 4) /verify_and_store to confirm fee + mark used
+ */
+async function startMintFlow() {
+  const btn = $id('mintButton');
   try {
-    setStatus('Reserving…');
-    await reserveCurrentImage();        // 15-min collision-proof hold (starts watcher)
-    await refreshSupply();              // supply unchanged on hold
+    setStatus('Picking a random Neko…');
 
-    setStatus('Preparing…');
-    // 1) Fee & address from backend
+    // 1) Randomize (same as the old Randomize button)
+    const randRes = await fetch('/randomize', { method: 'POST' });
+    if (!randRes.ok) throw new Error('Randomize HTTP ' + randRes.status);
+    const rand = await randRes.json();
+    const filename = rand?.imageInfo?.background;
+    const randomizedUrl = rand?.imageUrl;
+    if (!filename) throw new Error('Randomize did not return a filename');
+
+    setStatus('Reserving your Neko…');
+
+    // 2) Reserve that filename (server will swap if it got taken)
+    const holdRes = await fetch('/reserve_for_image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
+      body: JSON.stringify({ filename })
+    });
+    const hold = await holdRes.json();
+    if (!hold.ok) throw new Error(hold.error || 'Reserve failed');
+
+    reservationId    = hold.reservationId;
+    reservedFilename = hold.filename || filename;
+    const reservedUrl = hold.imageUrl || randomizedUrl; // prefer server URL
+
+    // Start silent watcher
+    if (watchTimer) clearInterval(watchTimer);
+    watchTimer = setInterval(watchReservation, 10_000);
+
+    await refreshSupply(); // supply unchanged on hold
+    setStatus('Preparing inscription…');
+
+    // 3) App fee config
     const prepRes = await fetch('/prepare_inscription', { method: 'POST' });
     const prep = await prepRes.json();
     if (!prep.appFeeAddress || !prep.appFee) throw new Error('Server missing app fee config');
 
     if (!window.SatsConnect || typeof window.SatsConnect.createInscription !== 'function') {
       setStatus('Sats-Connect not available. Check sats-connect-bundle.js.');
-      logDebug('SATS_CONNECT', 'window.SatsConnect missing createInscription');
-      return;
+      btn.disabled = false; return;
     }
 
-    // 2) Grab image as Base64 (we don't inject any new metadata here)
-    const base64Image = await getImageAsBase64($id('randomImage').src);
+    // Fetch the reserved image bytes (don’t touch slideshow image)
+    if (!reservedUrl) throw new Error('Reserved image URL missing');
+    const base64Image = await getImageAsBase64(reservedUrl);
 
-    // 3) Open Xverse popup
+    // 4) Wallet popup
     setStatus('Opening wallet…');
     await window.SatsConnect.createInscription({
       payload: {
@@ -209,18 +194,16 @@ async function startInscribeFlow() {
         appFee: prep.appFee
       },
       onFinish: async (resp) => {
-        logDebug('FINISH', resp);
         const id =
           resp?.txId || resp?.txid || resp?.revealTxId || resp?.commitTxId ||
           (Array.isArray(resp?.txIds) ? resp.txIds[0] : null) ||
           (resp?.result && (resp.result.txId || resp.result.txid));
-        if (!id) { setStatus('Wallet returned no txid.'); return; }
+        if (!id) { setStatus('Wallet returned no txid.'); btn.disabled = false; return; }
 
         $id('addressDisplay').innerHTML = `<div>Transaction ID: ${id}</div>`;
         setStatus('Verifying payment…');
 
-        // 4) Server verifies fee and permanently marks the reserved filename's serial as "used"
-        //    (Backend should map reservedFilename -> existing serial in your dataset.)
+        // 5) Verify & mark used (backend maps filename -> existing serial)
         const verifyRes = await fetch('/verify_and_store', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -229,26 +212,29 @@ async function startInscribeFlow() {
         const verify = await verifyRes.json();
         if (verify.ok) {
           setStatus('Verified ✔');
-          await refreshSupply();  // now the counter drops, since serial moved to used
+          await refreshSupply();
         } else {
           setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
         }
+        btn.disabled = false;
       },
-      onCancel: () => setStatus('Canceled.')
+      onCancel: () => {
+        setStatus('Canceled.');
+        btn.disabled = false;
+      }
     });
 
   } catch (err) {
     console.error(err);
-    setStatus(err.message || 'Error starting inscription.');
-    logDebug('ERROR', String(err));
+    setStatus(err.message || 'Error during mint.');
+    $id('mintButton').disabled = false;
   }
 }
 
 // Wire up UI
 document.addEventListener('DOMContentLoaded', () => {
-  $id('randomizeButton').addEventListener('click', loadRandomImage);
-  $id('inscribeButton').addEventListener('click', startInscribeFlow);
-  loadRandomImage();
+  $id('mintButton').addEventListener('click', startMintFlow);
+  startSlideshow();
   refreshSupply();
   setInterval(refreshSupply, 15000);
 });
