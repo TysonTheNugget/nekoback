@@ -1,269 +1,443 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Neko BTC — Mint</title>
+
   <!-- Local Sats-Connect bundle -->
   <script src="{{ url_for('static', filename='sats-connect-bundle.js') }}"></script>
+
+  <!-- Kawaii display + rounded JP font -->
+  <link href="https://fonts.googleapis.com/css2?family=Rampart+One&family=Zen+Maru+Gothic:wght@500;700&display=swap" rel="stylesheet">
+
   <style>
-    :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; }
-    html, body { height: 100%; }
-    body { margin:0; background:pink; color:#e6eefc; display:grid; place-items:center; }
-    .container { text-align:center; width:min(92vw, 720px); }
-    header h1 { margin:16px 0 6px; }
-    .muted { opacity:.75; font-size:.9em; }
-    .counter { margin-top:6px; font-weight:700; }
+    :root{
+      --bg-pink: #ff66a3;         /* base bg (your pink) */
+      --bg-pink-deep:#ff4d95;     /* deeper pink for gradient */
+      --neon-teal:#7efcff;        /* accent that pairs great with pink */
+      --lav:#d9b3ff;              /* soft lavender accent */
+      --ink:#0b1020;              /* deep navy text/backdrop */
+      --chip:#111832;             /* panel background */
+      --chip-2:#0d1430;           /* inner panel */
+      --white:#fff;
+      --soft: rgba(255,255,255,.75);
+    }
+
+    html, body { height:100%; }
+    body {
+      margin:0;
+      background:
+        radial-gradient(60vmax 60vmax at 20% 15%, #ffd3e8 0%, transparent 60%),
+        radial-gradient(70vmax 70vmax at 80% 80%, #ffc2ea 0%, transparent 55%),
+        linear-gradient(140deg, var(--bg-pink) 0%, var(--bg-pink-deep) 60%, #ff2e85 100%);
+      color: var(--white);
+      display:grid;
+      place-items:center;
+      min-height:100svh;
+      overflow-x:hidden;
+      font-family: "Zen Maru Gothic", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial;
+      letter-spacing:.2px;
+    }
+
+    .container { text-align:center; width:min(92vw, 760px); position:relative; z-index:1; }
+
+    header h1{
+      font-family:"Rampart One", system-ui;
+      margin:18px 0 6px;
+      font-size: clamp(32px, 6vw, 64px);
+      line-height:1.05;
+      letter-spacing: .5px;
+      /* Neon gradient fill */
+      background: linear-gradient(90deg, var(--neon-teal), var(--lav), var(--white));
+      -webkit-background-clip:text;
+      background-clip:text;
+      color: transparent;
+      /* Kawaii stroke + glow */
+      -webkit-text-stroke: 1px rgba(10,15,35,.6);
+      text-shadow:
+        0 0 1px rgba(0,0,0,.4),
+        0 2px 12px rgba(126,252,255,.4),
+        0 0 40px rgba(217,179,255,.18);
+    }
+
+    header .tag {
+      font-size: clamp(12px, 2.8vw, 16px);
+      margin-top:4px;
+      color: rgba(255,255,255,.9);
+      display:inline-flex;
+      align-items:center;
+      gap:.5ch;
+      padding:6px 12px;
+      border-radius:999px;
+      background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03));
+      border: 1px solid rgba(255,255,255,.18);
+      box-shadow: 0 6px 24px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.15);
+      backdrop-filter: blur(6px);
+    }
+
+    .counter {
+      margin-top:10px;
+      font-weight:700;
+      font-size: clamp(14px, 3.2vw, 18px);
+      color: var(--neon-teal);
+      text-shadow: 0 0 12px rgba(126,252,255,.55);
+    }
+
+    /* Image frame with kawaii outline & glow */
+    .image-wrap{
+      margin:20px auto 10px;
+      width: 340px; height: 340px;
+      max-width: 90vw; max-height: 90vw;
+      padding: 10px;
+      border-radius: 28px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.25), rgba(255,255,255,.05));
+      border: 1px solid rgba(255,255,255,.22);
+      box-shadow:
+        0 10px 30px rgba(0,0,0,.25),
+        0 0 0 6px rgba(126,252,255,.08),
+        0 0 40px rgba(217,179,255,.18);
+      backdrop-filter: blur(6px);
+    }
     .image-container {
-      background:#0f1a2b; border:1px solid #1e2a44; border-radius:20px;
-      box-shadow:0 10px 30px rgba(0,0,0,.25); margin:20px auto; display:grid;
-      place-items:center; overflow:hidden; width:320px; height:320px;
+      position:relative;
+      display:grid;
+      place-items:center;
+      overflow:hidden;
+      width:100%; height:100%;
+      border-radius: 20px;
+      background: radial-gradient(120% 120% at 50% 0%, var(--chip) 0%, var(--chip-2) 60%, #0a0f26 100%);
+      border: 1px solid rgba(126,252,255,.18);
+      box-shadow: inset 0 8px 30px rgba(0,0,0,.45);
     }
-    #randomImage { width:100%; height:100%; object-fit:contain; image-rendering:pixelated; image-rendering:crisp-edges; transition:opacity .5s ease; }
-    .btn { margin-top:14px; padding:12px 18px; border-radius:999px; border:1px solid #2b3b60; background:#1a2850; color:#e6eefc; font-weight:700; cursor:pointer; }
-    .btn:disabled { opacity:.6; cursor:not-allowed; }
-    #status { margin-top:12px; min-height:1.2em; }
-    .flyer-container {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
+    /* subtle inner neon ring */
+    .image-container::after{
+      content:"";
+      position:absolute; inset: 8px;
+      border-radius: 16px;
+      border: 2px solid rgba(126,252,255,.15);
+      pointer-events:none;
+      box-shadow:
+        inset 0 0 22px rgba(126,252,255,.15),
+        inset 0 0 55px rgba(217,179,255,.08);
+    }
+    #randomImage{
+      width:100%; height:100%;
+      object-fit:contain;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      transition: opacity .5s ease, transform .25s ease;
+      filter: drop-shadow(0 2px 0 rgba(255,255,255,.35))
+              drop-shadow(0 0 18px rgba(126,252,255,.25));
+    }
+    #randomImage.loaded { opacity:1; transform: scale(1); }
+    #randomImage:not(.loaded){ opacity:.0; transform: scale(.985); }
+
+    /* Kawaii pill button */
+    .btn{
+      margin-top:14px;
+      padding:14px 22px;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 16px;
+      letter-spacing:.4px;
+      cursor:pointer;
+      color:#0a1328;
+      background: linear-gradient(180deg, #c8fff8, #9ef4f1);
+      border: 1px solid #8ee8e5;
+      box-shadow:
+        0 8px 24px rgba(0,0,0,.22),
+        0 0 0 4px rgba(126,252,255,.18),
+        inset 0 1px 0 rgba(255,255,255,.8);
+      transition: transform .08s ease, filter .15s ease, box-shadow .2s ease;
+    }
+    .btn:hover{ transform: translateY(-1px); filter: brightness(1.03); }
+    .btn:active{ transform: translateY(0); filter: brightness(.98); }
+    .btn:disabled{ opacity:.6; cursor:not-allowed; filter: saturate(.6) brightness(.95); }
+
+    #addressDisplay{
+      margin-top:10px;
+      font-size:.95rem;
+      color: var(--soft);
+      word-break: break-all;
+    }
+    #status{
+      margin-top:10px;
+      min-height:1.2em;
+      color: var(--white);
+      text-shadow: 0 0 10px rgba(126,252,255,.25);
+      font-weight:700;
+    }
+
+    /* Floating pixel flyers (background) */
+    .flyer-container{
+      position: fixed;
+      inset: 0;
       overflow: hidden;
-      z-index: -1;
+      z-index: 0;
+      pointer-events: none;
     }
-    .flyer {
+    .flyer{
       position: absolute;
-      width: 128px; /* Matches canvas size (32 * 4) */
+      width: 128px;
       height: 128px;
       object-fit: contain;
-      image-rendering: pixelated; /* Ensures crisp edges */
-      animation: flyAcross 10s linear infinite;
+      image-rendering: pixelated;
+      animation: flyAcross 12s linear infinite;
+      opacity:.7;
+      filter: drop-shadow(0 0 12px rgba(255,255,255,.18));
     }
-    @keyframes flyAcross {
-      0% { transform: translateX(-120px); }
-      100% { transform: translateX(calc(100vw + 120px)); }
+    @keyframes flyAcross{
+      0%   { transform: translateX(-140px) translateY(var(--y, 0px)) rotate(0deg); }
+      100% { transform: translateX(calc(100vw + 140px)) translateY(var(--y, 0px)) rotate(360deg); }
+    }
+
+    /* Small subheader in JP vibe */
+    .subtagline{
+      margin-top:8px;
+      font-size: clamp(12px, 2.6vw, 15px);
+      color: rgba(255,255,255,.88);
+      text-shadow: 0 0 10px rgba(217,179,255,.22);
+      letter-spacing:.4px;
     }
   </style>
 </head>
 <body>
-<div class="flyer-container" id="flyerContainer"></div>
-<div class="container">
-  <header>
-    <h1>Neko Neko</h1>
-    <p class="muted">Mint Page</p>
-    <div class="counter" id="supplyCounter">10,000 / 10,000</div>
-  </header>
-  <button id="mintButton" class="btn">Mint</button>
-  <div class="image-container">
-    <img id="randomImage" src="" alt="Neko">
+  <div class="flyer-container" id="flyerContainer"></div>
+
+  <div class="container">
+    <header>
+      <h1>NEKO NEKO</h1>
+      <div class="tag">ねこねこ · Mint Page</div>
+      <div class="subtagline">Kawaii Bitcoin inscriptions — one purr at a time</div>
+      <div class="counter" id="supplyCounter">10,000 / 10,000</div>
+    </header>
+
+    <button id="mintButton" class="btn">Mint</button>
+
+    <div class="image-wrap">
+      <div class="image-container">
+        <img id="randomImage" src="" alt="Neko">
+      </div>
+    </div>
+
+    <div id="addressDisplay"></div>
+    <div id="status"></div>
   </div>
-  <div id="addressDisplay"></div>
-  <div id="status"></div>
-</div>
-<script>
-let reservationId = null;
-let reservedFilename = null;
-let watchTimer = null;
-let slideshowTimer = null;
-const SLIDESHOW_MS = 5000;
-const $id = (x) => document.getElementById(x);
-function setStatus(msg) { $id('status').textContent = msg || ''; }
-async function refreshSupply() {
-  try {
-    const r = await fetch('/supply');
-    const j = await r.json();
-    const remaining = j.remaining ?? 0;
-    const total = j.total ?? 10000;
-    $id('supplyCounter').textContent = `${remaining.toLocaleString()} / ${total.toLocaleString()}`;
-  } catch {}
-}
-function fadeSwapImage(newUrl) {
-  const img = $id('randomImage');
-  img.style.opacity = '0';
-  const onLoad = () => { img.style.opacity = '1'; img.removeEventListener('load', onLoad); };
-  img.addEventListener('load', onLoad);
-  img.crossOrigin = 'anonymous';
-  img.src = newUrl;
-}
-async function slideshowTick() {
-  try {
-    const res = await fetch('/randomize', { method: 'POST' });
-    if (!res.ok) throw new Error('Randomize HTTP ' + res.status);
-    const response = await res.json();
-    if (response.imageUrl) fadeSwapImage(response.imageUrl);
-  } catch (_) { /* ignore */ }
-}
-function startSlideshow() {
-  if (slideshowTimer) clearInterval(slideshowTimer);
-  slideshowTimer = setInterval(slideshowTick, SLIDESHOW_MS);
-  slideshowTick();
-}
-async function getImageAsBase64(url) {
-  const res = await fetch(url, { cache: 'no-cache' });
-  const blob = await res.blob();
-  const buf = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-async function watchReservation() {
-  if (!reservationId) return;
-  try {
-    const r = await fetch('/reservation_status', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reservationId })
-    });
-    const j = await r.json();
-    if (!j.ok) return;
-    if (!j.active) {
-      clearInterval(watchTimer); watchTimer = null;
-      setStatus('Reservation ended.');
-      return;
+
+  <script>
+    let reservationId = null;
+    let reservedFilename = null;
+    let watchTimer = null;
+    let slideshowTimer = null;
+    const SLIDESHOW_MS = 5000;
+
+    const $id = (x) => document.getElementById(x);
+    function setStatus(msg){ $id('status').textContent = msg || ''; }
+
+    async function refreshSupply(){
+      try{
+        const r = await fetch('/supply');
+        const j = await r.json();
+        const remaining = j.remaining ?? 0;
+        const total = j.total ?? 10000;
+        $id('supplyCounter').textContent = `${remaining.toLocaleString()} / ${total.toLocaleString()}`;
+      }catch{}
     }
-    if (j.used) {
-      clearInterval(watchTimer); watchTimer = null;
-      setStatus('Mint confirmed ✔');
-      await refreshSupply();
-      return;
+
+    function fadeSwapImage(newUrl){
+      const img = $id('randomImage');
+      img.classList.remove('loaded');
+      const onLoad = () => {
+        img.classList.add('loaded');
+        img.removeEventListener('load', onLoad);
+      };
+      img.addEventListener('load', onLoad);
+      img.crossOrigin = 'anonymous';
+      img.src = newUrl;
     }
-  } catch (_) { /* ignore */ }
-}
-async function startMintFlow() {
-  const btn = $id('mintButton');
-  try {
-    setStatus('Picking a random Neko…');
-    const randRes = await fetch('/randomize', { method: 'POST' });
-    if (!randRes.ok) throw new Error('Randomize HTTP ' + randRes.status);
-    const rand = await randRes.json();
-    const filename = rand?.imageInfo?.background;
-    const randomizedUrl = rand?.imageUrl;
-    if (!filename) throw new Error('Randomize did not return a filename');
-    setStatus('Reserving your Neko…');
-    const holdRes = await fetch('/reserve_for_image', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
-      body: JSON.stringify({ filename })
-    });
-    const hold = await holdRes.json();
-    if (!hold.ok) throw new Error(hold.error || 'Reserve failed');
-    reservationId = hold.reservationId;
-    reservedFilename = hold.filename || filename;
-    const reservedUrl = hold.imageUrl || randomizedUrl;
-    if (watchTimer) clearInterval(watchTimer);
-    watchTimer = setInterval(watchReservation, 10_000);
-    await refreshSupply();
-    setStatus('Preparing inscription…');
-    const prepRes = await fetch('/prepare_inscription', { method: 'POST' });
-    const prep = await prepRes.json();
-    if (!prep.appFeeAddress || !prep.appFee) throw new Error('Server missing app fee config');
-    if (!window.SatsConnect || typeof window.SatsConnect.createInscription !== 'function') {
-      setStatus('Sats-Connect not available. Check sats-connect-bundle.js.');
-      btn.disabled = false; return;
+
+    async function slideshowTick(){
+      try{
+        const res = await fetch('/randomize', { method: 'POST' });
+        if(!res.ok) throw new Error('Randomize HTTP ' + res.status);
+        const response = await res.json();
+        if(response.imageUrl) fadeSwapImage(response.imageUrl);
+      }catch(_){ /* ignore */ }
     }
-    if (!reservedUrl) throw new Error('Reserved image URL missing');
-    const base64Image = await getImageAsBase64(reservedUrl);
-    setStatus('Opening wallet…');
-    await window.SatsConnect.createInscription({
-      payload: {
-        network: { type: prep.network || 'Mainnet' },
-        contentType: 'image/png',
-        content: base64Image,
-        payloadType: 'BASE_64',
-        appFeeAddress: prep.appFeeAddress,
-        appFee: prep.appFee
-      },
-      onFinish: async (resp) => {
-        const id =
-          resp?.txId || resp?.txid || resp?.revealTxId || resp?.commitTxId ||
-          (Array.isArray(resp?.txIds) ? resp.txIds[0] : null) ||
-          (resp?.result && (resp.result.txId || resp.result.txid));
-        if (!id) { setStatus('Wallet returned no txid.'); btn.disabled = false; return; }
-        $id('addressDisplay').innerHTML = `<div>Transaction ID: ${id}</div>`;
-        setStatus('Verifying payment…');
-        const verifyRes = await fetch('/verify_and_store', {
+
+    function startSlideshow(){
+      if(slideshowTimer) clearInterval(slideshowTimer);
+      slideshowTimer = setInterval(slideshowTick, SLIDESHOW_MS);
+      slideshowTick();
+    }
+
+    async function getImageAsBase64(url){
+      const res = await fetch(url, { cache: 'no-cache' });
+      const blob = await res.blob();
+      const buf  = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+
+    async function watchReservation(){
+      if(!reservationId) return;
+      try{
+        const r = await fetch('/reservation_status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ txId: id, reservationId, filename: reservedFilename })
+          body: JSON.stringify({ reservationId })
         });
-        const verify = await verifyRes.json();
-        if (verify.ok) {
-          setStatus('Verified ✔');
-          await refreshSupply();
-        } else {
-          setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
+        const j = await r.json();
+        if(!j.ok) return;
+
+        if(!j.active){
+          clearInterval(watchTimer); watchTimer = null;
+          setStatus('Reservation ended.');
+          return;
         }
-        btn.disabled = false;
-      },
-      onCancel: () => {
-        setStatus('Confirming..');
-        btn.disabled = false;
-      }
-    });
-  } catch (err) {
-    console.error(err);
-    setStatus(err.message || 'Error during mint.');
-    $id('mintButton').disabled = false;
-  }
-}
-async function createFlyers() {
-  const container = $id('flyerContainer');
-  const images = Array.from({length: 8}, (_, i) => `static/flyers/${i + 1}.png`);
-  const scaleFactor = 1.1; // Upscale 32x32 to 128x128 (4x)
-
-  for (const src of images) {
-    try {
-      // Create image element and load the source
-      const img = new Image();
-      img.src = src;
-      img.crossOrigin = 'anonymous'; // If images are served from a different origin
-
-      // Wait for the image to load
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = () => reject(new Error(`Failed to load image: ${src}`));
-      });
-
-      // Create a canvas to upscale the image
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      canvas.width = 32 * scaleFactor; // New width (128px)
-      canvas.height = 32 * scaleFactor; // New height (128px)
-
-      // Disable image smoothing to preserve pixel art look
-      ctx.imageSmoothingEnabled = false;
-
-      // Draw the original 32x32 image scaled up
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-      // Create a new image element for the flyer
-      const flyerImg = document.createElement('img');
-      flyerImg.src = canvas.toDataURL('image/png'); // Use upscaled image as data URL
-      flyerImg.className = 'flyer';
-      flyerImg.style.top = `${Math.random() * (window.innerHeight - 100)}px`;
-      flyerImg.style.animationDelay = `${Math.random() * 10}s`;
-      flyerImg.style.width = `${100 * scaleFactor}px`; // Adjust size for display (128px)
-      flyerImg.style.height = `${100 * scaleFactor}px`; // Adjust size for display (128px)
-
-      // Optional: Add pixelated rendering for browsers
-      flyerImg.style.imageRendering = 'pixelated';
-
-      // Append to container
-      container.appendChild(flyerImg);
-    } catch (err) {
-      console.error(err);
+        if(j.used){
+          clearInterval(watchTimer); watchTimer = null;
+          setStatus('Mint confirmed ✔');
+          await refreshSupply();
+          return;
+        }
+      }catch(_){ /* ignore */ }
     }
-  }
-}
-document.addEventListener('DOMContentLoaded', () => {
-  $id('mintButton').addEventListener('click', startMintFlow);
-  startSlideshow();
-  refreshSupply();
-  setInterval(refreshSupply, 15000);
-  createFlyers();
-});
-</script>
+
+    async function startMintFlow(){
+      const btn = $id('mintButton');
+      try{
+        setStatus('Picking a random Neko…');
+        const randRes = await fetch('/randomize', { method: 'POST' });
+        if(!randRes.ok) throw new Error('Randomize HTTP ' + randRes.status);
+        const rand = await randRes.json();
+        const filename = rand?.imageInfo?.background;
+        const randomizedUrl = rand?.imageUrl;
+        if(!filename) throw new Error('Randomize did not return a filename');
+
+        setStatus('Reserving your Neko…');
+        const holdRes = await fetch('/reserve_for_image', {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json', 'X-Client-Id': crypto.randomUUID() },
+          body: JSON.stringify({ filename })
+        });
+        const hold = await holdRes.json();
+        if(!hold.ok) throw new Error(hold.error || 'Reserve failed');
+
+        reservationId   = hold.reservationId;
+        reservedFilename = hold.filename || filename;
+        const reservedUrl = hold.imageUrl || randomizedUrl;
+
+        if(watchTimer) clearInterval(watchTimer);
+        watchTimer = setInterval(watchReservation, 10_000);
+
+        await refreshSupply();
+        setStatus('Preparing inscription…');
+
+        const prepRes = await fetch('/prepare_inscription', { method:'POST' });
+        const prep = await prepRes.json();
+        if(!prep.appFeeAddress || !prep.appFee) throw new Error('Server missing app fee config');
+
+        if(!window.SatsConnect || typeof window.SatsConnect.createInscription !== 'function'){
+          setStatus('Sats-Connect not available. Check sats-connect-bundle.js.');
+          btn.disabled = false; return;
+        }
+
+        if(!reservedUrl) throw new Error('Reserved image URL missing');
+        const base64Image = await getImageAsBase64(reservedUrl);
+
+        setStatus('Opening wallet…');
+        await window.SatsConnect.createInscription({
+          payload: {
+            network: { type: prep.network || 'Mainnet' },
+            contentType: 'image/png',
+            content: base64Image,
+            payloadType: 'BASE_64',
+            appFeeAddress: prep.appFeeAddress,
+            appFee: prep.appFee
+          },
+          onFinish: async (resp) => {
+            const id =
+              resp?.txId || resp?.txid || resp?.revealTxId || resp?.commitTxId ||
+              (Array.isArray(resp?.txIds) ? resp.txIds[0] : null) ||
+              (resp?.result && (resp.result.txId || resp.result.txid));
+
+            if(!id){ setStatus('Wallet returned no txid.'); btn.disabled = false; return; }
+
+            $id('addressDisplay').innerHTML = `<div>Transaction ID: ${id}</div>`;
+            setStatus('Verifying payment…');
+
+            const verifyRes = await fetch('/verify_and_store', {
+              method:'POST',
+              headers:{ 'Content-Type':'application/json' },
+              body: JSON.stringify({ txId: id, reservationId, filename: reservedFilename })
+            });
+            const verify = await verifyRes.json();
+
+            if(verify.ok){
+              setStatus('Verified ✔');
+              await refreshSupply();
+            }else{
+              setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
+            }
+            btn.disabled = false;
+          },
+          onCancel: () => {
+            setStatus('Confirming..');
+            btn.disabled = false;
+          }
+        });
+      }catch(err){
+        console.error(err);
+        setStatus(err.message || 'Error during mint.');
+        $id('mintButton').disabled = false;
+      }
+    }
+
+    async function createFlyers(){
+      const container = $id('flyerContainer');
+      const images = Array.from({length: 8}, (_, i) => `static/flyers/${i + 1}.png`);
+      const scaleFactor = 4; // 32px -> 128px
+
+      for (const src of images) {
+        try{
+          const img = new Image();
+          img.src = src;
+          img.crossOrigin = 'anonymous';
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => reject(new Error('Failed to load ' + src));
+          });
+
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          canvas.width = 32 * scaleFactor;
+          canvas.height = 32 * scaleFactor;
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          const flyerImg = document.createElement('img');
+          flyerImg.src = canvas.toDataURL('image/png');
+          flyerImg.className = 'flyer';
+          flyerImg.style.top = `${Math.random() * (window.innerHeight - 120)}px`;
+          flyerImg.style.setProperty('--y', `${(Math.random()*40 - 20)}px`);
+          flyerImg.style.animationDelay = `${Math.random() * 12}s`;
+          container.appendChild(flyerImg);
+        }catch(err){ console.error(err); }
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      $id('mintButton').addEventListener('click', startMintFlow);
+      startSlideshow();
+      refreshSupply();
+      setInterval(refreshSupply, 15000);
+      createFlyers();
+    });
+  </script>
 </body>
 </html>
