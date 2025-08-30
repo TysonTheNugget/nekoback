@@ -153,48 +153,81 @@ def load_wl_inscriptions():
         
 def fetch_wallet_inscriptions(address: str) -> list:
     """
-    Fetch ALL inscriptions currently held by an address from Hiro API.
-    Handles pagination, uses HIRO_API_TOKEN if available, and logs diagnostics.
+    Robust fetch of ALL inscriptions held by an address from Hiro.
+    - Uses HIRO_API_TOKEN if set.
+    - Paginates using offset.
+    - Retries with different limits if the API ignores a higher limit.
+    - Stops when a page adds no new IDs to avoid infinite loops.
+    - Very verbose logs so you can see what's happening on Render.
     """
     base = "https://api.hiro.so/ordinals/v1/inscriptions"
-    limit = 200  # max per page (as allowed by API)
-    offset = 0
-    out = []
     headers = {}
     if HIRO_API_TOKEN:
         headers["Authorization"] = f"Bearer {HIRO_API_TOKEN}"
 
+    # Try a few limits because some deployments ignore >20
+    limits_to_try = [200, 100, 50, 20]
+    all_ids = []
+    seen = set()
+
     try:
-        page_idx = 0
-        while True:
-            url = f"{base}?address={address}&limit={limit}&offset={offset}"
-            r = requests.get(url, headers=headers, timeout=20)
-            try:
-                r.raise_for_status()
-            except Exception as e:
-                print(f"[WL] Hiro fetch error (status={r.status_code}) for {url}: {e} body={r.text[:300]}")
+        for chosen_limit in limits_to_try:
+            offset = 0
+            page = 0
+            plateau_pages = 0  # break if we see no growth across pages
+            print(f"[WL] Wallet fetch start for {address} with limit={chosen_limit}")
+
+            while True:
+                url = f"{base}?address={address}&limit={chosen_limit}&offset={offset}"
+                r = requests.get(url, headers=headers, timeout=25)
+                status = r.status_code
+                if status >= 400:
+                    print(f"[WL] Hiro fetch error status={status} url={url} body={r.text[:300]}")
+                    break
+                j = r.json() or {}
+                results = j.get("results") or []
+                page += 1
+
+                # Collect IDs
+                new_ids = []
+                for it in results:
+                    _id = it.get("id")
+                    if isinstance(_id, str) and _id not in seen:
+                        seen.add(_id)
+                        all_ids.append(_id)
+                        new_ids.append(_id)
+
+                print(f"[WL] page={page} limit={chosen_limit} offset={offset} "
+                      f"page_count={len(results)} new_ids={len(new_ids)} total={len(all_ids)}")
+
+                # Advance offset by ACTUAL results length (not by limit)
+                if len(results) == 0:
+                    print(f"[WL] stop: empty page")
+                    break
+
+                if len(new_ids) == 0:
+                    plateau_pages += 1
+                else:
+                    plateau_pages = 0
+
+                # If API ignores offset/limit and we keep getting repeats, bail after 2 plateau pages
+                if plateau_pages >= 2:
+                    print(f"[WL] stop: plateau (no growth for {plateau_pages} consecutive pages)")
+                    break
+
+                offset += len(results)
+
+                # Safety cap (avoid runaway loops)
+                if page >= 200:
+                    print("[WL] stop: safety page cap reached (200)")
+                    break
+
+            # If we got >20, likely good; if still small, try next limit value
+            if len(all_ids) > 20:
                 break
 
-            j = r.json() or {}
-            results = j.get("results") or []
-            count = len(results)
-            page_idx += 1
-            print(f"[WL] Hiro page {page_idx}: got {count} inscriptions (offset={offset})")
-
-            for it in results:
-                _id = it.get("id")
-                if isinstance(_id, str):
-                    out.append(_id)
-
-            if count < limit:
-                break
-            offset += limit
-
-        print(f"[WL] Total inscriptions fetched for {address}: {len(out)}")
-        # Sample for logs
-        if out:
-            print(f"[WL] Sample ids: {out[:3]}")
-        return out
+        print(f"[WL] Total inscriptions fetched for {address}: {len(all_ids)} (sample={all_ids[:3]})")
+        return all_ids
     except Exception as e:
         print(f"[WL] fetch_wallet_inscriptions error for {address}: {e}")
         return []
