@@ -5,5 +5,5 @@ Pillow==10.4.0
 requests==2.32.3
 cloudinary==1.41.0
 apscheduler==3.10.4
-btclib==2023.7.12
+btclib>=2023.7.12,<2024
 cachetools>=5.3
