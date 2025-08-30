@@ -286,16 +286,39 @@ def rebuild_used_serials_core():
     return {"scanned_tx_keys": total, "added_to_used_serials": added}
 
 
-# Add this function before the routes section
 # Replace the existing poll_wl_mint function with this
 def poll_wl_mint(reservation_id, filename, address, inscription_id):
     serial = extract_serial_from_filename(filename)
-    print(f"[WL] Starting background polling for reservation {reservation_id}, serial {serial}, address {address}")
+    print(f"[WL] Starting background polling for reservation {reservation_id}, serial {serial}, address {address}, inscription {inscription_id}")
     attempts = 0
     max_attempts = 90  # 900 seconds / 10 seconds
     while attempts < max_attempts:
         try:
-            # Check Redis tx:* keys
+            # Check scanner API
+            scanner_url = "https://nekonekobackendscan.vercel.app/api/scan"
+            scanner_res = requests.get(scanner_url, timeout=10)
+            scanner_res.raise_for_status()
+            scanner_data = scanner_res.json()
+            print(f"[WL] Scanner API response for {reservation_id} (attempt {attempts + 1}): {scanner_data}")
+            if isinstance(scanner_data, list):
+                for item in scanner_data:
+                    if isinstance(item, dict) and item.get("serial") == serial and item.get("txId"):
+                        tx_id = item.get("txId")
+                        print(f"[WL] Found tx {tx_id} for serial {serial} (filename {filename}) in scanner API")
+                        # Call verify_and_store internally
+                        data = {
+                            "txId": tx_id,
+                            "reservationId": reservation_id,
+                            "address": address
+                        }
+                        with app.test_request_context('/verify_and_store', method='POST', json=data):
+                            response = verify_and_store()
+                            print(f"[WL] verify_and_store response for tx {tx_id}: {response.get_json()}")
+                        rz_del(f"wl_poll:{reservation_id}")
+                        return
+            else:
+                print(f"[WL] Invalid scanner API response format for {reservation_id}: {scanner_data}")
+            # Check Redis tx:* keys as fallback
             for keys in scan_keys(match_pattern="tx:*", count=1000):
                 for key in keys:
                     row = rz_hgetall(key)
@@ -317,31 +340,8 @@ def poll_wl_mint(reservation_id, filename, address, inscription_id):
                             print(f"[WL] verify_and_store response for tx {tx_id}: {response.get_json()}")
                         rz_del(f"wl_poll:{reservation_id}")
                         return
-            # Check scanner API
-            scanner_url = "https://nekonekobackendscan.vercel.app/api/scan"
-            scanner_res = requests.get(scanner_url, timeout=10)
-            scanner_res.raise_for_status()
-            scanner_data = scanner_res.json()
-            print(f"[WL] Scanner API response: {scanner_data}")
-            if isinstance(scanner_data, list):
-                for item in scanner_data:
-                    if isinstance(item, dict) and item.get("serial") == serial:
-                        tx_id = item.get("txId")
-                        if tx_id:
-                            print(f"[WL] Found tx {tx_id} for serial {serial} (filename {filename}) in scanner API")
-                            # Call verify_and_store internally
-                            data = {
-                                "txId": tx_id,
-                                "reservationId": reservation_id,
-                                "address": address
-                            }
-                            with app.test_request_context('/verify_and_store', method='POST', json=data):
-                                response = verify_and_store()
-                                print(f"[WL] verify_and_store response for tx {tx_id}: {response.get_json()}")
-                            rz_del(f"wl_poll:{reservation_id}")
-                            return
         except Exception as e:
-            print(f"[WL] Error in poll_wl_mint for reservation {reservation_id}: {e}")
+            print(f"[WL] Error in poll_wl_mint for reservation {reservation_id} (attempt {attempts + 1}): {e}")
         attempts += 1
         time.sleep(10)
     print(f"[WL] Polling timed out for reservation {reservation_id}, serial {serial}")
@@ -726,33 +726,42 @@ def rebuild_used_serials():
 def healthz():
     return "ok", 200
 
-# ---------- Scheduler setup ----------
+
 # Replace the existing scheduler setup with this
 scheduler = None
 if RUN_SCHEDULER:
     try:
-        scheduler = BackgroundScheduler(daemon=True)
+        scheduler = BackgroundScheduler(daemon=True, timezone="UTC")
+        # Test Redis connectivity
+        try:
+            rz_get("/ping")
+            print("[WL] Redis connection successful")
+        except Exception as e:
+            print(f"[WL] Redis connection failed: {e}")
+            raise Exception("Cannot start scheduler without Redis connection")
         # Resume pending WL polls from Redis
-        for keys in scan_keys(match_pattern="wl_poll:*", count=100):
-            for key in keys:
-                poll_data = rz_get_json(key)
-                if poll_data:
+        try:
+            for keys in scan_keys(match_pattern="wl_poll:*", count=100):
+                for key in keys:
                     try:
-                        data = json.loads(poll_data) if isinstance(poll_data, str) else poll_data
-                        rid = key.replace("wl_poll:", "")
-                        scheduler.add_job(
-                            poll_wl_mint,
-                            args=[rid, data["filename"], data["address"], data["inscriptionId"]],
-                            id=f"poll_wl_{rid}",
-                            max_instances=1,
-                            replace_existing=True
-                        )
-                        print(f"[WL] Resumed polling for reservation {rid}")
+                        poll_data = rz_get_json(key)
+                        if poll_data:
+                            data = json.loads(poll_data) if isinstance(poll_data, str) else poll_data
+                            rid = key.replace("wl_poll:", "")
+                            scheduler.add_job(
+                                poll_wl_mint,
+                                args=[rid, data["filename"], data["address"], data["inscriptionId"]],
+                                id=f"poll_wl_{rid}",
+                                max_instances=1,
+                                replace_existing=True
+                            )
+                            print(f"[WL] Resumed polling for reservation {rid}, filename {data['filename']}, address {data['address']}")
                     except Exception as e:
                         print(f"[WL] Error resuming poll for {key}: {e}")
-        scheduler.start()
+            print(f"[WL] Scheduler started with {scheduler.get_jobs().__len__()} jobs")
+            scheduler.start()
+        except Exception as e:
+            print(f"[WL] Error starting scheduler: {e}")
+            raise
     except Exception as e:
-        print(f"[WL] Error starting scheduler: {e}")
-
-if __name__ == '__main__':
-    app.run(debug=False)
+        print(f"[WL] Failed to initialize scheduler: {e}")
