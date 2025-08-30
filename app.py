@@ -292,6 +292,60 @@ def rebuild_used_serials_core():
                 rz_sadd("used_serials", serial)
                 added += 1
     return {"scanned_tx_keys": total, "added_to_used_serials": added}
+    
+def wl_finalize_from_scanner():
+    for keys in scan_keys(match_pattern="wl_pending:*", count=200):
+        for key in keys:
+            try:
+                rid = key.split("wl_pending:", 1)[1]
+                info = rz_get_json(key)
+                info = json.loads(info) if isinstance(info, str) else (info or {})
+                address = (info.get("address") or "").strip()
+                serial  = (info.get("serial") or "").strip()
+                insc    = (info.get("inscriptionId") or "").strip()
+                if not (rid and address and serial):
+                    continue
+
+                # Fast path: use scanner’s buyer index
+                try:
+                    txids = rz_get(f"/smembers/buyer:{address}:txs") or []
+                except Exception:
+                    txids = []
+                if not isinstance(txids, list):
+                    txids = []
+
+                # Fallback: scan tx:* by buyerAddr
+                if not txids:
+                    for tkeys in scan_keys(match_pattern="tx:*", count=500):
+                        for tkey in tkeys:
+                            row = rz_hgetall(tkey) or {}
+                            if (row.get("buyerAddr") or "") == address:
+                                txids.append(tkey.replace("tx:", ""))
+
+                if not txids:
+                    continue
+
+                for txid in txids:
+                    row = rz_hgetall(f"tx:{txid}") or {}
+                    if (row.get("serial") or "").strip() != serial:
+                        continue
+                    if not tx_pays_app_fee(txid, wl=True):
+                        continue
+
+                    # Call your existing finalizer endpoint in-process
+                    with app.test_request_context('/verify_and_store', method='POST', json={
+                        "txId": txid,
+                        "reservationId": rid,
+                        "inscriptionId": insc
+                    }):
+                        resp = verify_and_store()
+                        print(f"[WL finalize] matched addr={address} serial={serial} tx={txid} -> {resp.status_code}")
+
+                    # Clean pending key (verify_and_store also handles cleanup)
+                    rz_del(key)
+                    break
+            except Exception as e:
+                print(f"[WL finalize] error on {key}: {e}")
 
 # ---------- routes ----------
 @app.route('/')
@@ -418,7 +472,6 @@ def claim_wl():
     address = (data.get('address') or '').strip()
     inscription_id = (data.get('inscriptionId') or '').strip()
     holder_id = (data.get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon")
-
     if not address or not inscription_id:
         return jsonify({"ok": False, "error": "Missing address or inscriptionId"}), 400
     try:
@@ -430,7 +483,6 @@ def claim_wl():
         wallet_ids = fetch_wallet_inscriptions(address)
         if inscription_id not in wallet_ids:
             return jsonify({"ok": False, "error": "Inscription not found in wallet"}), 400
-
         # place holds
         fname, serial = pick_available_filename()
         ok = try_hold_serial(serial, holder_id, ttl=1200)
@@ -440,9 +492,9 @@ def claim_wl():
             if not ok:
                 raise RuntimeError("Could not reserve any image")
         rid = create_reservation_id(serial, ttl=1200, wl=True, inscription_id=inscription_id, address=address)
+        rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 1200)
         # temp lock the exact inscription so it can't be reused while minting
         rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 1200)
-
         print(f"[WL] Reserved {fname} (serial {serial}) for {address} WL rid={rid}")
         return jsonify({
             "ok": True,"filename": fname,"serial": serial,"reservationId": rid,
@@ -563,15 +615,16 @@ def ping_scanner_and_rebuild():
 scheduler = None
 if RUN_SCHEDULER:
     try:
-        # prove redis connectivity (0 is fine if empty)
         _ = rz_scard("used_serials")
         scheduler = BackgroundScheduler(daemon=True)
-        # ping scanner + rebuild every 10s for live counter
+
+        # ping scanner + rebuild every 10s (keeps counter live)
         scheduler.add_job(ping_scanner_and_rebuild, 'interval', seconds=10, max_instances=1, coalesce=True)
+
+        # WL auto-finalizer (uses buyer:{address}:txs from scanner) every 10s
+        scheduler.add_job(wl_finalize_from_scanner, 'interval', seconds=10, max_instances=1, coalesce=True)
+
         scheduler.start()
-        print("[scheduler] live scan+rebuild every 10s")
+        print("[scheduler] started: scan+rebuild+wl-finalizer every 10s")
     except Exception as e:
         print(f"[scheduler] failed to start: {e}")
-
-if __name__ == '__main__':
-    app.run(debug=False)
