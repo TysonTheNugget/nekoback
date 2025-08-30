@@ -287,23 +287,25 @@ def rebuild_used_serials_core():
 
 
 # Add this function before the routes section
+# Replace the existing poll_wl_mint function with this
 def poll_wl_mint(reservation_id, filename, address, inscription_id):
     serial = extract_serial_from_filename(filename)
     print(f"[WL] Starting background polling for reservation {reservation_id}, serial {serial}, address {address}")
     attempts = 0
-    max_attempts = 180  # 900 seconds / 5 seconds
+    max_attempts = 90  # 900 seconds / 10 seconds
     while attempts < max_attempts:
         try:
+            # Check Redis tx:* keys
             for keys in scan_keys(match_pattern="tx:*", count=1000):
                 for key in keys:
                     row = rz_hgetall(key)
                     if not isinstance(row, dict):
                         continue
                     row_serial = row.get("serial")
-                    print(f"[WL] Polling tx {key} with serial {row_serial}")
+                    print(f"[WL] Polling Redis tx {key} with serial {row_serial}")
                     if row_serial == serial:
                         tx_id = key.replace("tx:", "")
-                        print(f"[WL] Found tx {tx_id} for serial {serial} (filename {filename})")
+                        print(f"[WL] Found tx {tx_id} for serial {serial} (filename {filename}) in Redis")
                         # Call verify_and_store internally
                         data = {
                             "txId": tx_id,
@@ -315,10 +317,33 @@ def poll_wl_mint(reservation_id, filename, address, inscription_id):
                             print(f"[WL] verify_and_store response for tx {tx_id}: {response.get_json()}")
                         rz_del(f"wl_poll:{reservation_id}")
                         return
+            # Check scanner API
+            scanner_url = "https://nekonekobackendscan.vercel.app/api/scan"
+            scanner_res = requests.get(scanner_url, timeout=10)
+            scanner_res.raise_for_status()
+            scanner_data = scanner_res.json()
+            print(f"[WL] Scanner API response: {scanner_data}")
+            if isinstance(scanner_data, list):
+                for item in scanner_data:
+                    if isinstance(item, dict) and item.get("serial") == serial:
+                        tx_id = item.get("txId")
+                        if tx_id:
+                            print(f"[WL] Found tx {tx_id} for serial {serial} (filename {filename}) in scanner API")
+                            # Call verify_and_store internally
+                            data = {
+                                "txId": tx_id,
+                                "reservationId": reservation_id,
+                                "address": address
+                            }
+                            with app.test_request_context('/verify_and_store', method='POST', json=data):
+                                response = verify_and_store()
+                                print(f"[WL] verify_and_store response for tx {tx_id}: {response.get_json()}")
+                            rz_del(f"wl_poll:{reservation_id}")
+                            return
         except Exception as e:
             print(f"[WL] Error in poll_wl_mint for reservation {reservation_id}: {e}")
         attempts += 1
-        time.sleep(5)
+        time.sleep(10)
     print(f"[WL] Polling timed out for reservation {reservation_id}, serial {serial}")
     # Clean up on timeout
     resv_data = rz_get_json(f"resv:{reservation_id}")

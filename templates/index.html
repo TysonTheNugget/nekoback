@@ -439,7 +439,7 @@ async function claimWL(){
         fadeSwapImage(claim.imageUrl);
         if (watchTimer) clearInterval(watchTimer);
         watchTimer = setInterval(watchReservation, 5_000);
-        setStatus('Whitelist spot reserved! Waiting for mint confirmation…');
+        setStatus('Whitelist spot reserved! Waiting for mint confirmation (this may take up to 15 minutes)...');
         const prepRes = await fetch('/prepare_wl_inscription', { method: 'POST' });
         const prep = await prepRes.json();
         if (!prep.appFeeAddress || !prep.appFee) {
@@ -462,24 +462,11 @@ async function claimWL(){
                 appFeeAddress: prep.appFeeAddress,
                 appFee: prep.appFee
             },
-            onFinish: () => {
-                setStatus('Mint submitted. Waiting for confirmation (this may take up to 15 minutes)...');
-            },
-            onCancel: () => {
-                setStatus('WL Mint cancelled.');
-                fetch('/cancel_wl_reservation', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ reservationId, filename: reservedFilename, address: window.ordinalAddress, inscriptionId: wlInscriptionId })
-                });
-                reservationId = null;
-                reservedFilename = null;
-                wlInscriptionId = null;
-                isWLReservation = false;
-                btn.disabled = false;
-                $id('mintButton').disabled = false;
-            }
+            onFinish: () => {}, // Ignore due to Sats-Connect unreliability
+            onCancel: () => {}  // Ignore to prevent premature cancellation
         });
+        btn.disabled = false;
+        $id('mintButton').disabled = false;
     } catch (err) {
         console.error(err);
         setStatus('Error during WL claim: ' + (err.message || 'Unknown error'));
