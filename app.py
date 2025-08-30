@@ -36,27 +36,71 @@ PNG_TEXT_KEY_HINT = None
 
 
 def load_wl_inscriptions() -> set:
-    """Load WL inscription IDs from clean_inscriptions.json (cached)."""
+    """
+    Load WL inscription IDs from clean_inscriptions.json with verbose logging.
+    Tries env WL_INSCRIPTIONS_PATH first, then app.root_path/clean_inscriptions.json,
+    then CWD/clean_inscriptions.json.
+    Caches contents until the file mtime changes.
+    """
     import os, json, time
     global WL_INSCRIPTIONS_CACHE, WL_INSCRIPTIONS_MTIME
-    # You can override the path via env: WL_INSCRIPTIONS_PATH
-    path = os.getenv("WL_INSCRIPTIONS_PATH", os.path.join(app.root_path, "clean_inscriptions.json"))
-    try:
-        mtime = os.path.getmtime(path)
-        if WL_INSCRIPTIONS_CACHE is None or mtime != WL_INSCRIPTIONS_MTIME:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # Accept either a bare list or {"inscriptions": [...]}
-            if isinstance(data, list):
-                WL_INSCRIPTIONS_CACHE = set(data)
-            else:
-                WL_INSCRIPTIONS_CACHE = set(data.get("inscriptions", []))
-            WL_INSCRIPTIONS_MTIME = mtime
-            print(f"[WL] Loaded {len(WL_INSCRIPTIONS_CACHE)} inscriptions from {path}")
-        return WL_INSCRIPTIONS_CACHE
-    except Exception as e:
-        print(f"[WL] Failed to load WL inscriptions from {path}: {e}")
-        return set()
+
+    candidates = []
+    env_path = os.getenv("WL_INSCRIPTIONS_PATH", "").strip()
+    if env_path:
+        candidates.append(env_path)
+    candidates.append(os.path.join(app.root_path, "clean_inscriptions.json"))
+    candidates.append(os.path.join(os.getcwd(), "clean_inscriptions.json"))
+
+    print("[WL] ===== WL LOAD DIAGNOSTICS =====")
+    print(f"[WL] CWD: {os.getcwd()}")
+    print(f"[WL] app.root_path: {app.root_path}")
+    print(f"[WL] WL_INSCRIPTIONS_PATH (env): {env_path or '(unset)'}")
+    print(f"[WL] Candidate paths (in order):")
+    for p in candidates:
+        print(f"      - {p}")
+
+    last_err = None
+    for path in candidates:
+        try:
+            if not os.path.isabs(path):
+                path = os.path.abspath(path)
+
+            exists = os.path.exists(path)
+            print(f"[WL] Checking: {path} (exists={exists})")
+            if not exists:
+                continue
+
+            size = os.path.getsize(path)
+            mtime = os.path.getmtime(path)
+            print(f"[WL]   -> size={size} bytes, mtime={mtime} ({time.ctime(mtime)})")
+
+            # Only re-read if cache is empty or file changed
+            if WL_INSCRIPTIONS_CACHE is None or mtime != WL_INSCRIPTIONS_MTIME:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    WL_INSCRIPTIONS_CACHE = set(data)
+                else:
+                    WL_INSCRIPTIONS_CACHE = set(data.get("inscriptions", []))
+                WL_INSCRIPTIONS_MTIME = mtime
+                print(f"[WL] Loaded {len(WL_INSCRIPTIONS_CACHE)} WL inscriptions from {path}")
+
+            # Sanity sample
+            sample = list(WL_INSCRIPTIONS_CACHE)[:3]
+            print(f"[WL] Sample inscriptions: {sample}")
+
+            return WL_INSCRIPTIONS_CACHE
+
+        except Exception as e:
+            last_err = e
+            print(f"[WL] ERROR reading {path}: {e}")
+
+    # If we got here, all candidates failed
+    print("[WL] FAILED to load WL inscriptions from all candidates.")
+    if last_err:
+        print(f"[WL] Last error: {last_err}")
+    return set()
         
 def fetch_wallet_inscriptions(address: str) -> list:
     """Best-effort wallet inscriptions fetch (fallback only)."""
@@ -630,33 +674,34 @@ def check_wl_eligibility():
     if not address:
         return jsonify({"ok": False, "error": "Missing address"}), 400
     try:
-        # Load whitelist inscriptions
         wl_inscriptions = load_wl_inscriptions()
+        print(f"[WL] wl_inscriptions count: {len(wl_inscriptions)}")
+
         if not wl_inscriptions:
+            print("[WL] No WL inscriptions loaded. See diagnostics above.")
             return jsonify({"ok": False, "error": "Failed to load whitelist inscriptions"}), 500
-        
-        # Fetch wallet inscriptions
+
         wallet_inscriptions = fetch_wallet_inscriptions(address)
-        
-        # Check for blacklisted or temporarily blacklisted inscriptions
-        valid_inscriptions = []
-        blacklisted = []
+        print(f"[WL] Wallet {address} has {len(wallet_inscriptions)} inscriptions (first 5): {wallet_inscriptions[:5]}")
+
+        valid_inscriptions, blacklisted = [], []
         for ins in wallet_inscriptions:
             if ins in wl_inscriptions:
                 if rz_sismember("blacklisted_inscriptions", ins) or rz_exists(f"temp_blacklist:{address}:{ins}"):
                     blacklisted.append(ins)
                 else:
                     valid_inscriptions.append(ins)
-        print(f"[WL] Address {address}: {len(valid_inscriptions)} valid inscriptions, {len(blacklisted)} blacklisted: {blacklisted[:5]}...")
-        
+
+        print(f"[WL] Address {address}: valid={len(valid_inscriptions)}, blacklisted={len(blacklisted)}")
+        if blacklisted:
+            print(f"[WL]   blacklisted sample: {blacklisted[:3]}")
+        if valid_inscriptions:
+            print(f"[WL]   valid sample: {valid_inscriptions[:3]}")
+
         if not valid_inscriptions:
             return jsonify({"ok": False, "error": "No valid whitelist inscriptions found"})
-        
-        return jsonify({
-            "ok": True,
-            "eligible": True,
-            "inscriptions": valid_inscriptions
-        })
+
+        return jsonify({"ok": True, "eligible": True, "inscriptions": valid_inscriptions})
     except Exception as e:
         print(f"[WL] Error in check_wl_eligibility for {address}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
