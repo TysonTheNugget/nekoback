@@ -4,6 +4,7 @@ import requests
 import urllib.parse
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
+import zlib
 
 # Suppress HTTP logs
 logging.getLogger('werkzeug').disabled = True
@@ -26,6 +27,133 @@ SERIAL_REGEX = re.compile(r"\b(\d{10})\b")
 RUN_SCHEDULER = os.getenv("RUN_SCHEDULER", "1") not in ("0", "false", "False", "")
 HIRO_API_TOKEN = "1423e3815899d351c41529064e5b9a52"
 PUBLIC_MINT_START_TS = int(os.getenv("PUBLIC_MINT_START_TS", "0"))  # epoch seconds; 0 = open now
+MEMPOOL_BASE = "https://mempool.space/api"
+CONTENT_BASE = "https://api.hiro.so/ordinals/v1/inscriptions"
+PNG_SIG = b'\x89PNG\r\n\x1a\n'
+
+def get_case_insensitive(text_map: dict, key: str):
+    for k in text_map:
+        if k.lower() == key.lower():
+            return text_map[k]
+    return None
+
+def maybe_serial_from_json_values(text_map: dict):
+    for v in text_map.values():
+        if not isinstance(v, str):
+            continue
+        trimmed = v.strip()
+        if not trimmed:
+            continue
+        try:
+            obj = json.loads(trimmed)
+            s = obj.get('serial') or obj.get('Serial') or (obj.get('name') if re.match(r'^[A-Za-z0-9]{10,24}$', str(obj.get('name', ''))) else None)
+            if s:
+                return str(s)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+def find_alnum_token(s: str):
+    if not isinstance(s, str):
+        return None
+    m = re.search(r'\b[A-Za-z0-9]{10,24}\b', s)
+    return m.group(0) if m else None
+
+def parse_png_text(buf: bytes):
+    if not buf or len(buf) < 8 or buf[:8] != PNG_SIG:
+        return {"ok": False, "text": None}
+    text = {}
+    off = 8
+    while off + 8 <= len(buf):
+        chunk_len = int.from_bytes(buf[off:off+4], 'big')
+        off += 4
+        chunk_type = buf[off:off+4].decode('latin1')
+        off += 4
+        if off + chunk_len > len(buf):
+            break
+        data = buf[off:off + chunk_len]
+        off += chunk_len
+        off += 4  # Skip CRC
+        if chunk_type == "tEXt":
+            zero_pos = data.find(b'\x00')
+            if zero_pos >= 0:
+                k = data[:zero_pos].decode('latin1')
+                v = data[zero_pos + 1:].decode('latin1')
+                text[k] = v
+        elif chunk_type == "zTXt":
+            zero_pos = data.find(b'\x00')
+            if zero_pos >= 0:
+                k = data[:zero_pos].decode('latin1')
+                comp_method = data[zero_pos + 1:zero_pos + 2]
+                comp_data = data[zero_pos + 2:]
+                if comp_method == b'\x00':
+                    try:
+                        v = zlib.decompress(comp_data).decode('utf-8')
+                        text[k] = v
+                    except zlib.error as e:
+                        text[k] = f"<zTXt decompress error: {e}>"
+        elif chunk_type == "iTXt":
+            parts = data.split(b'\x00', 5)  # keyword\0comp_flag\0comp_method\0lang\0trans\0payload
+            if len(parts) == 6:
+                k, comp_flag, comp_method, lang, trans, payload = parts
+                try:
+                    if comp_flag == b'\x01':
+                        v = zlib.decompress(payload).decode('utf-8')
+                    else:
+                        v = payload.decode('utf-8')
+                    text[k.decode('latin1')] = v
+                except zlib.error as e:
+                    text[k.decode('latin1')] = f"<iTXt error: {e}>"
+        if chunk_type == "IEND":
+            break
+    return {"ok": len(text) > 0, "text": text}
+
+def find_png_inscription_id(txid: str, max_index=5):
+    for i in range(max_index + 1):
+        ins_id = f"{txid}i{i}"
+        buf = fetch_inscription_content(ins_id)
+        if buf and len(buf) >= 8 and buf[:8] == PNG_SIG:
+            return ins_id
+    return None
+
+def fetch_inscription_content(inscription_id: str):
+    url = f"{CONTENT_BASE}/{inscription_id}/content"
+    headers = {
+        'Accept': 'application/octet-stream',  # For raw binary
+        'Authorization': f'Bearer {HIRO_API_TOKEN}'
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        return r.content  # Bytes
+    except Exception as e:
+        print(f"[WL] Inscription content fetch error for {inscription_id}: {e}")
+        return None
+
+def safe_get_json(url):
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[WL] Mempool fetch error: {e}")
+        return None
+
+def fetch_mempool_txs(address):
+    return safe_get_json(f"{MEMPOOL_BASE}/address/{address}/txs/mempool") or []
+
+def fetch_chain_txs(address, pages=1):
+    out = []
+    last = None
+    for _ in range(pages):
+        url = f"{MEMPOOL_BASE}/address/{address}/txs/chain/{last}" if last else f"{MEMPOOL_BASE}/address/{address}/txs"
+        page = safe_get_json(url) or []
+        if not page:
+            break
+        out.extend(page)
+        if page:
+            last = page[-1].get('txid')
+    return out
 
 def is_public_mint_open() -> bool:
     try:
@@ -175,8 +303,7 @@ def extract_serial_from_filename(fname: str):
     return base
 
 def fetch_tx_outputs(txid: str):
-    base = "https://blockstream.info/api" if BITCOIN_NETWORK.lower() == "mainnet" else "https://blockstream.info/testnet/api"
-    r = requests.get(f"{base}/tx/{txid}", timeout=20)
+    r = requests.get(f"{MEMPOOL_BASE}/tx/{txid}", timeout=20)
     r.raise_for_status()
     j = r.json()
     outs = []
@@ -186,6 +313,9 @@ def fetch_tx_outputs(txid: str):
             "value": vout.get("value", 0)
         })
     return outs
+    
+def fetch_outspends(txid: str):
+    return safe_get_json(f"{MEMPOOL_BASE}/tx/{txid}/outspends") or []
 
 def tx_pays_app_fee(txid: str, wl=False) -> bool:
     try:
@@ -301,58 +431,75 @@ def poll_wl_mint(reservation_id, filename, address, inscription_id):
     max_attempts = 90  # 900 seconds / 10 seconds
     while attempts < max_attempts:
         try:
-            # Check scanner API
-            scanner_url = "https://nekonekobackendscan.vercel.app/api/scan"
-            scanner_res = requests.get(scanner_url, timeout=10)
-            scanner_res.raise_for_status()
-            scanner_data = scanner_res.json()
-            print(f"[WL] Scanner API response for {reservation_id} (attempt {attempts + 1}): {scanner_data}")
-            if isinstance(scanner_data, list):
-                for item in scanner_data:
-                    if isinstance(item, dict) and item.get("serial") == serial and item.get("txId"):
-                        tx_id = item.get("txId")
-                        print(f"[WL] Found tx {tx_id} for serial {serial} (filename {filename}) in scanner API")
-                        # Call verify_and_store internally
-                        data = {
-                            "txId": tx_id,
-                            "reservationId": reservation_id,
-                            "address": address
-                        }
-                        with app.test_request_context('/verify_and_store', method='POST', json=data):
-                            response = verify_and_store()
-                            print(f"[WL] verify_and_store response for tx {tx_id}: {response.get_json()}")
-                        rz_del(f"wl_poll:{reservation_id}")
-                        return
-            else:
-                print(f"[WL] Invalid scanner API response format for {reservation_id}: {scanner_data}")
-            # Check Redis tx:* keys as fallback
-            for keys in scan_keys(match_pattern="tx:*", count=1000):
-                for key in keys:
-                    row = rz_hgetall(key)
-                    if not isinstance(row, dict):
+            # Fetch unconfirmed + recent confirmed txs from user's wallet
+            mempool_txs = fetch_mempool_txs(address)
+            chain_txs = fetch_chain_txs(address, pages=2)  # Last 50 txs or so
+            all_txs = mempool_txs + chain_txs
+            print(f"[WL] Fetched {len(all_txs)} txs from wallet {address} (attempt {attempts + 1})")
+
+            for tx in all_txs:
+                txid = tx.get('txid')
+                if not txid:
+                    continue
+
+                # Check if this tx pays the WL fee (using Mempool)
+                if not tx_pays_app_fee(txid, wl=True):
+                    continue
+
+                # Get outspends to find reveal txids
+                outspends = fetch_outspends(txid)
+                candidates = []
+                for spend in outspends:
+                    if spend.get('spent'):
+                        reveal_txid = spend.get('txid')
+                        if reveal_txid:
+                            candidates.append(reveal_txid)
+
+                uniq_candidates = list(set(candidates))
+                for rtxid in uniq_candidates:
+                    ins_id = find_png_inscription_id(rtxid)
+                    if not ins_id:
                         continue
-                    row_serial = row.get("serial")
-                    print(f"[WL] Polling Redis tx {key} with serial {row_serial}")
-                    if row_serial == serial:
-                        tx_id = key.replace("tx:", "")
-                        print(f"[WL] Found tx {tx_id} for serial {serial} (filename {filename}) in Redis")
-                        # Call verify_and_store internally
+
+                    buf = fetch_inscription_content(ins_id)
+                    if not buf:
+                        continue
+
+                    parsed = parse_png_text(buf)
+                    if not parsed['ok']:
+                        continue
+
+                    text = parsed['text']
+                    # Extract serial (like scan.js)
+                    extracted_serial = (
+                        text.get(PNG_TEXT_KEY_HINT or 'Serial') or
+                        get_case_insensitive(text, 'serial') or
+                        maybe_serial_from_json_values(text) or
+                        (text.get('name') if re.match(r'^[A-Za-z0-9]{10,24}$', str(text.get('name', ''))) else None) or
+                        find_alnum_token('\n'.join(f"{k}={v}" for k, v in text.items()))
+                    )
+
+                    if extracted_serial == serial:
+                        print(f"[WL] Found matching serial {serial} in tx {txid} for reservation {reservation_id}")
+                        # Call verify_and_store
                         data = {
-                            "txId": tx_id,
+                            "txId": txid,
                             "reservationId": reservation_id,
                             "address": address
                         }
                         with app.test_request_context('/verify_and_store', method='POST', json=data):
                             response = verify_and_store()
-                            print(f"[WL] verify_and_store response for tx {tx_id}: {response.get_json()}")
+                            print(f"[WL] verify_and_store response for tx {txid}: {response.get_json()}")
                         rz_del(f"wl_poll:{reservation_id}")
-                        return
+                        return  # Done
+
         except Exception as e:
-            print(f"[WL] Error in poll_wl_mint for reservation {reservation_id} (attempt {attempts + 1}): {e}")
+            print(f"[WL] Error in poll_wl_mint for {reservation_id} (attempt {attempts + 1}): {e}")
         attempts += 1
         time.sleep(10)
+
+    # Timeout cleanup (unchanged)
     print(f"[WL] Polling timed out for reservation {reservation_id}, serial {serial}")
-    # Clean up on timeout
     resv_data = rz_get_json(f"resv:{reservation_id}")
     if resv_data:
         try:
