@@ -3,6 +3,11 @@ import os, random, time, hmac, hashlib, json, re, uuid
 import requests
 import urllib.parse
 from apscheduler.schedulers.background import BackgroundScheduler
+import logging
+
+# Suppress HTTP logs
+logging.getLogger('werkzeug').disabled = True
+app.logger.disabled = True
 
 app = Flask(__name__)
 
@@ -400,12 +405,12 @@ def check_wl_eligibility():
         # Fetch wallet inscriptions
         wallet_inscriptions = fetch_wallet_inscriptions(address)
         
-        # Check for blacklisted inscriptions
+        # Check for blacklisted or temporarily blacklisted inscriptions
         valid_inscriptions = []
         blacklisted = []
         for ins in wallet_inscriptions:
             if ins in wl_inscriptions:
-                if rz_sismember("blacklisted_inscriptions", ins):
+                if rz_sismember("blacklisted_inscriptions", ins) or rz_exists(f"temp_blacklist:{address}:{ins}"):
                     blacklisted.append(ins)
                 else:
                     valid_inscriptions.append(ins)
@@ -446,14 +451,31 @@ def claim_wl():
         # Verify wallet owns the inscription
         wallet_inscriptions = fetch_wallet_inscriptions(address)
         valid_inscriptions = [
-            ins for ins in wallet_inscriptions 
+            ins for ins in wallet_inscriptions
             if ins in wl_inscriptions and not rz_sismember("blacklisted_inscriptions", ins)
+            and not rz_exists(f"temp_blacklist:{address}:{ins}")
         ]
         if not valid_inscriptions:
             print(f"[WL] No valid inscriptions found for {address}")
             return jsonify({"ok": False, "error": "No valid inscriptions found in wallet"}), 400
         inscription_id = valid_inscriptions[0]  # Select first valid inscription
-            
+        
+        # Check WL lock
+        lock_key = f"wl_lock:{address}"
+        if rz_exists(lock_key):
+            print(f"[WL] Address {address} is locked for WL mint")
+            return jsonify({"ok": False, "error": "Another WL mint is in progress. Please wait."}), 429
+        
+        # Temporarily blacklist inscription
+        temp_blacklist_key = f"temp_blacklist:{address}:{inscription_id}"
+        if rz_exists(temp_blacklist_key):
+            print(f"[WL] Inscription {inscription_id} temporarily blacklisted for {address}")
+            return jsonify({"ok": False, "error": "Inscription temporarily locked. Please wait."}), 429
+        rz_setex(temp_blacklist_key, "locked", 600)  # Lock for 10 minutes
+        
+        # Set WL lock
+        rz_setex(lock_key, "locked", 600)  # Lock for 10 minutes
+        
         # Reserve image
         fname, serial = pick_available_filename()
         ok = try_hold_serial(serial, holder_id, ttl=900)
@@ -461,6 +483,8 @@ def claim_wl():
             fname, serial = pick_available_filename()
             ok = try_hold_serial(serial, holder_id, ttl=900)
             if not ok:
+                rz_del(temp_blacklist_key)  # Release temp blacklist on failure
+                rz_del(lock_key)  # Release WL lock on failure
                 raise RuntimeError("Could not reserve any image")
                 
         # Create WL reservation
@@ -478,6 +502,8 @@ def claim_wl():
         })
     except Exception as e:
         print(f"[WL] Error in claim_wl for {address}: {e}")
+        rz_del(f"temp_blacklist:{address}:{inscription_id}")
+        rz_del(f"wl_lock:{address}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route('/verify_and_store', methods=['POST'])
@@ -511,16 +537,7 @@ def verify_and_store():
         rz_sadd("used_serials", serial)
         rz_del(f"hold:{serial}")
         rz_del(f"resv:{reservationId}")
-        # 🔓 Release WL lock so the address can try again later
         rz_del(f"wl_lock:{address}")
-
-        rz_hset_many(f"tx:{txId}", {
-            "serial": serial,
-            "pngText": json.dumps({"Serial": serial}),
-            "wl": "1" if wl else "0"
-        })
-        print(f"[WL] Verified and stored tx {txId} for serial {serial} (WL: {wl})")
-        
         blacklisted_inscription = None
         if wl:
             wl_inscriptions = load_wl_inscriptions()
@@ -532,8 +549,16 @@ def verify_and_store():
             if valid_inscriptions:
                 blacklisted_inscription = valid_inscriptions[0]
                 rz_sadd("blacklisted_inscriptions", blacklisted_inscription)
+                rz_del(f"temp_blacklist:{address}:{blacklisted_inscription}")
                 print(f"[WL] Blacklisted inscription {blacklisted_inscription} after verified mint for tx {txId}")
-    
+        
+        rz_hset_many(f"tx:{txId}", {
+            "serial": serial,
+            "pngText": json.dumps({"Serial": serial}),
+            "wl": "1" if wl else "0"
+        })
+        print(f"[WL] Verified and stored tx {txId} for serial {serial} (WL: {wl})")
+        
         return jsonify({
             "ok": True,
             "txId": txId,
@@ -542,10 +567,9 @@ def verify_and_store():
             "blacklistedInscription": blacklisted_inscription
         })
     except Exception as e:
-        print(f"[WL] Error in verify_and_store for tx {txId}: {e}")
+        print(f"[WL] Error in verify_and_store for {txId}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
-        
 @app.route('/check_scanner', methods=['POST'])
 def check_scanner():
     data = request.get_json(force=True) or {}
@@ -556,28 +580,34 @@ def check_scanner():
         return jsonify({"ok": False, "error": "Missing filename or address"}), 400
     
     try:
+        serial = extract_serial_from_filename(filename)
+        print(f"[WL] Checking scanner for serial {serial} from filename {filename}")
         for keys in scan_keys(match_pattern="tx:*", count=1000):
             for key in keys:
                 row = rz_hgetall(key)
                 if not isinstance(row, dict):
                     continue
-                if row.get("serial") == extract_serial_from_filename(filename):
+                row_serial = row.get("serial")
+                print(f"[WL] Scanning tx {key} with serial {row_serial}")
+                if row_serial == serial:
                     print(f"[WL] Found tx {key} for filename {filename}")
                     return jsonify({"ok": True, "txId": key.replace("tx:", "")})
-        print(f"[WL] No tx found for filename {filename}")
+        print(f"[WL] No tx found for serial {serial} (filename {filename})")
         return jsonify({"ok": False, "error": "No transaction found for filename"})
     except Exception as e:
         print(f"[WL] Error in check_scanner for {filename}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-        
+
 @app.route('/cancel_wl_reservation', methods=['POST'])
 def cancel_wl_reservation():
     data = request.get_json(force=True) or {}
     reservationId = data.get('reservationId')
     filename = data.get('filename')
-    if not reservationId or not filename:
-        print(f"[WL] Missing data in cancel_wl_reservation: reservationId={reservationId}, filename={filename}")
-        return jsonify({"ok": False, "error": "Missing reservationId or filename"}), 400
+    address = data.get('address')
+    inscription_id = data.get('inscriptionId')
+    if not reservationId or not filename or not address:
+        print(f"[WL] Missing data in cancel_wl_reservation: reservationId={reservationId}, filename={filename}, address={address}")
+        return jsonify({"ok": False, "error": "Missing reservationId, filename, or address"}), 400
     try:
         resv_data = rz_get_json(f"resv:{reservationId}")
         if resv_data:
@@ -585,6 +615,8 @@ def cancel_wl_reservation():
             serial = resv.get("serial")
             rz_del(f"resv:{reservationId}")
             rz_del(f"hold:{serial}")
+            rz_del(f"temp_blacklist:{address}:{inscription_id}")
+            rz_del(f"wl_lock:{address}")
             print(f"[WL] Cancelled reservation {reservationId} for serial {serial}")
         return jsonify({"ok": True})
     except Exception as e:
