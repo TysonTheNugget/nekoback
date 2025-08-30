@@ -101,80 +101,50 @@ def _normalize_wl_payload(data) -> set[str]:
     print(f"[WL] WL normalize: total_items_scanned={total}, ids_collected={len(out)}, dicts_without_id={dicts_no_id}")
     return out
 
-def load_wl_inscriptions() -> set[str]:
+def load_wl_inscriptions():
     """
-    Load WL inscription IDs with verbose diagnostics.
-    Search order:
-      1) WL_INSCRIPTIONS_PATH (env) if set
-      2) app.root_path/clean_inscriptions.json
-      3) app.root_path/static/clean_inscriptions.json
-      4) app.root_path/static/Singles/clean_inscriptions.json
-      5) CWD/clean_inscriptions.json
-    Caches until mtime changes.
+    Reads whitelist from static/Singles/clean_inscriptions.json.
+    Accepts either:
+      - [ {"id": "<inscriptionId>"}, ... ]  (your original format)
+      - ["<inscriptionId>", ...]            (also supported)
+      - {"inscriptions": [...]}             (also supported)
+    Returns: list[str] of inscription IDs.
     """
-    import os, json, time
-    global WL_INSCRIPTIONS_CACHE, WL_INSCRIPTIONS_MTIME, WL_INSCRIPTIONS_LAST_SOURCE
+    json_path = os.path.join(SINGLES_DIR, 'clean_inscriptions.json')
+    try:
+        exists = os.path.exists(json_path)
+        print(f"[WL] Reading WL from {json_path} (exists={exists})")
+        if not exists:
+            raise FileNotFoundError(json_path)
 
-    env_path = os.getenv("WL_INSCRIPTIONS_PATH", "").strip()
-    candidates = []
-    if env_path:
-        candidates.append(env_path)
-    candidates.append(os.path.join(app.root_path, "clean_inscriptions.json"))
-    candidates.append(os.path.join(app.root_path, "static", "clean_inscriptions.json"))
-    candidates.append(os.path.join(app.root_path, "static", "Singles", "clean_inscriptions.json"))
-    candidates.append(os.path.join(os.getcwd(), "clean_inscriptions.json"))
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
-    # Deduplicate while preserving order
-    seen = set()
-    uniq_candidates = []
-    for p in candidates:
-        ap = os.path.abspath(p)
-        if ap not in seen:
-            uniq_candidates.append(ap)
-            seen.add(ap)
+        # Normalize a few common shapes
+        if isinstance(data, dict) and isinstance(data.get("inscriptions"), list):
+            items = data["inscriptions"]
+        elif isinstance(data, list):
+            items = data
+        else:
+            raise ValueError("clean_inscriptions.json must be a list or a dict with 'inscriptions' list")
 
-    print("[WL] ===== WL LOAD DIAGNOSTICS =====")
-    print(f"[WL] CWD: {os.getcwd()}")
-    print(f"[WL] app.root_path: {app.root_path}")
-    print(f"[WL] WL_INSCRIPTIONS_PATH (env): {env_path or '(unset)'}")
-    print(f"[WL] Candidate paths (in order):")
-    for p in uniq_candidates:
-        print(f"      - {p}")
+        ids = []
+        ignored = 0
+        for it in items:
+            if isinstance(it, str):
+                ids.append(it.strip())
+            elif isinstance(it, dict) and "id" in it and isinstance(it["id"], str):
+                ids.append(it["id"].strip())
+            else:
+                ignored += 1
 
-    last_err = None
-    for path in uniq_candidates:
-        try:
-            exists = os.path.exists(path)
-            print(f"[WL] Checking: {path} (exists={exists})")
-            if not exists:
-                continue
-
-            size = os.path.getsize(path)
-            mtime = os.path.getmtime(path)
-            print(f"[WL]   -> size={size} bytes, mtime={mtime} ({time.ctime(mtime)})")
-
-            # Only re-read if first load or file changed
-            if WL_INSCRIPTIONS_CACHE is None or mtime != WL_INSCRIPTIONS_MTIME or WL_INSCRIPTIONS_LAST_SOURCE != path:
-                with open(path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-
-                ids = _normalize_wl_payload(raw)
-                if not ids:
-                    print(f"[WL] WARNING: No valid inscription IDs found in {path}.")
-                WL_INSCRIPTIONS_CACHE = ids
-                WL_INSCRIPTIONS_MTIME = mtime
-                WL_INSCRIPTIONS_LAST_SOURCE = path
-                print(f"[WL] Loaded {len(WL_INSCRIPTIONS_CACHE)} WL inscriptions from {path}")
-
-            # Sanity sample
-            sample = list(WL_INSCRIPTIONS_CACHE)[:3]
-            print(f"[WL] Sample inscriptions: {sample}")
-
-            return WL_INSCRIPTIONS_CACHE
-
-        except Exception as e:
-            last_err = e
-            print(f"[WL] ERROR reading {path}: {e}")
+        # Basic sanity + log
+        ids = [i for i in ids if i]  # drop empties
+        print(f"[WL] Loaded {len(ids)} inscriptions from clean_inscriptions.json (ignored {ignored}). Sample: {ids[:3]}")
+        return ids
+    except Exception as e:
+        print(f"[WL] Error loading clean_inscriptions.json at {json_path}: {e}")
+        return []
 
     print("[WL] FAILED to load WL inscriptions from all candidates.")
     if last_err:
