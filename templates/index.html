@@ -380,47 +380,57 @@
       }
     }
 
-    async function claimWL() {
-      const btn = $id('claimWLButton');
-      btn.disabled = true;
-      setStatus('Connecting wallet…');
-      const address = await connectWallet();
-      if (!address) {
+async function claimWL(){
+    const btn = $id('claimWLButton');
+    btn.disabled = true;
+    $id('mintButton').disabled = true;
+    setStatus('Connecting wallet…');
+    const address = await connectWallet();
+    if (!address) {
         btn.disabled = false;
+        $id('mintButton').disabled = false;
         return;
-      }
-      setStatus('Checking whitelist eligibility…');
-      try {
+    }
+    setStatus('Checking whitelist eligibility…');
+    try {
         const res = await fetch('/check_wl_eligibility', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address })
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ address })
         });
         const data = await res.json();
         if (!data.ok || !data.eligible) {
-          setStatus(data.error || 'Not eligible for whitelist.');
-          btn.disabled = false;
-          return;
+            setStatus(data.error || 'Not eligible for whitelist.');
+            btn.disabled = false;
+            $id('mintButton').disabled = false;
+            return;
         }
-        // Select first valid inscription (could be modified to let user choose)
+        // Select first valid inscription
         const inscriptionId = data.inscriptions[0];
         setStatus('Claiming whitelist spot…');
         const claimRes = await fetch('/claim_wl', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
-          body: JSON.stringify({ address, inscriptionId })
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
+            body: JSON.stringify({ address, inscriptionId })
         });
         const claim = await claimRes.json();
-        if (!claim.ok) {
-          // 🔒 Handle WL lock cooldown specifically
-          if (claim.error && claim.error.includes("Another WL mint is in progress")) {
-            setStatus("Another WL mint is in progress. Please wait ~2 minutes.");
+        if (claim.error && claim.error.includes("Another WL mint is in progress")) {
+            setStatus("Another WL mint is in progress. Please wait up to 15 minutes.");
             btn.disabled = false;
+            $id('mintButton').disabled = false;
             return;
-          }
-          setStatus(claim.error || 'Failed to claim whitelist spot.');
-          btn.disabled = false;
-          return;
+        }
+        if (claim.error && claim.error.includes("Inscription temporarily locked")) {
+            setStatus("Inscription locked. Please wait up to 15 minutes.");
+            btn.disabled = false;
+            $id('mintButton').disabled = false;
+            return;
+        }
+        if (!claim.ok) {
+            setStatus(claim.error || 'Failed to claim whitelist spot.');
+            btn.disabled = false;
+            $id('mintButton').disabled = false;
+            return;
         }
         reservationId = claim.reservationId;
         reservedFilename = claim.filename;
@@ -433,64 +443,61 @@
         const prepRes = await fetch('/prepare_wl_inscription', { method: 'POST' });
         const prep = await prepRes.json();
         if (!prep.appFeeAddress || !prep.appFee) {
-          setStatus('Server missing WL fee config');
-          btn.disabled = false;
-          return;
+            setStatus('Server missing WL fee config');
+            btn.disabled = false;
+            $id('mintButton').disabled = false;
+            reservationId = null;
+            reservedFilename = null;
+            wlInscriptionId = null;
+            isWLReservation = false;
+            return;
         }
         const base64Image = await getImageAsBase64(`/file/${reservedFilename}`);
         await window.SatsConnect.createInscription({
-          payload: {
-            network: { type: prep.network || 'Mainnet' },
-            contentType: 'image/png',
-            content: base64Image,
-            payloadType: 'BASE_64',
-            appFeeAddress: prep.appFeeAddress,
-            appFee: prep.appFee
-          },
-          onFinish: () => { }, // Ignore onFinish due to Sats-Connect bug
-          onCancel: () => { }  // Ignore onCancel
+            payload: {
+                network: { type: prep.network || 'Mainnet' },
+                contentType: 'image/png',
+                content: base64Image,
+                payloadType: 'BASE_64',
+                appFeeAddress: prep.appFeeAddress,
+                appFee: prep.appFee
+            },
+            onFinish: () => {
+                setStatus('Mint submitted. Waiting for confirmation (this may take up to 15 minutes)...');
+            },
+            onCancel: () => {
+                setStatus('WL Mint cancelled.');
+                fetch('/cancel_wl_reservation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reservationId, filename: reservedFilename, address: window.ordinalAddress, inscriptionId: wlInscriptionId })
+                });
+                reservationId = null;
+                reservedFilename = null;
+                wlInscriptionId = null;
+                isWLReservation = false;
+                btn.disabled = false;
+                $id('mintButton').disabled = false;
+            }
         });
-        let attempts = 0;
-        const maxAttempts = 12; // 120 seconds / 10 seconds
-        while (attempts < maxAttempts) {
-          console.log(`[WL] Polling scanner, attempt ${attempts + 1}`);
-          const scannerRes = await fetch('/check_scanner', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: reservedFilename, address: window.ordinalAddress })
-          });
-          const scanner = await scannerRes.json();
-          console.log('[WL] check_scanner response:', scanner);
-          if (scanner.ok && scanner.txId) {
-            await verifyMint(scanner.txId);
-            btn.disabled = false;
-            $id('claimWLButton').disabled = false;
-            return;
-          }
-          attempts++;
-          await new Promise(resolve => setTimeout(resolve, 10000));
-        }
-        setStatus('Transaction not found. Enter txId manually.');
-        const txId = prompt('Enter transaction ID if mint was successful:');
-        if (txId) {
-          await verifyMint(txId);
-        } else {
-          setStatus('WL Mint cancelled.');
-          await fetch('/cancel_wl_reservation', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reservationId, filename: reservedFilename })
-          });
-        }
-        btn.disabled = false;
-        $id('claimWLButton').disabled = false;
-        await startWLMintFlow();
-      } catch (err) {
+    } catch (err) {
         console.error(err);
         setStatus('Error during WL claim: ' + (err.message || 'Unknown error'));
         btn.disabled = false;
-      }
+        $id('mintButton').disabled = false;
+        if (reservationId && reservedFilename && window.ordinalAddress && wlInscriptionId) {
+            fetch('/cancel_wl_reservation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reservationId, filename: reservedFilename, address: window.ordinalAddress, inscriptionId: wlInscriptionId })
+            });
+        }
+        reservationId = null;
+        reservedFilename = null;
+        wlInscriptionId = null;
+        isWLReservation = false;
     }
+}
 
 
     // ===== Mint flow (unchanged for regular mint) =====

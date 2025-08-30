@@ -285,6 +285,56 @@ def rebuild_used_serials_core():
                 added += 1
     return {"scanned_tx_keys": total, "added_to_used_serials": added}
 
+
+# Add this function before the routes section
+def poll_wl_mint(reservation_id, filename, address, inscription_id):
+    serial = extract_serial_from_filename(filename)
+    print(f"[WL] Starting background polling for reservation {reservation_id}, serial {serial}, address {address}")
+    attempts = 0
+    max_attempts = 180  # 900 seconds / 5 seconds
+    while attempts < max_attempts:
+        try:
+            for keys in scan_keys(match_pattern="tx:*", count=1000):
+                for key in keys:
+                    row = rz_hgetall(key)
+                    if not isinstance(row, dict):
+                        continue
+                    row_serial = row.get("serial")
+                    print(f"[WL] Polling tx {key} with serial {row_serial}")
+                    if row_serial == serial:
+                        tx_id = key.replace("tx:", "")
+                        print(f"[WL] Found tx {tx_id} for serial {serial} (filename {filename})")
+                        # Call verify_and_store internally
+                        data = {
+                            "txId": tx_id,
+                            "reservationId": reservation_id,
+                            "address": address
+                        }
+                        with app.test_request_context('/verify_and_store', method='POST', json=data):
+                            response = verify_and_store()
+                            print(f"[WL] verify_and_store response for tx {tx_id}: {response.get_json()}")
+                        rz_del(f"wl_poll:{reservation_id}")
+                        return
+        except Exception as e:
+            print(f"[WL] Error in poll_wl_mint for reservation {reservation_id}: {e}")
+        attempts += 1
+        time.sleep(5)
+    print(f"[WL] Polling timed out for reservation {reservation_id}, serial {serial}")
+    # Clean up on timeout
+    resv_data = rz_get_json(f"resv:{reservation_id}")
+    if resv_data:
+        try:
+            resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
+            serial = resv.get("serial")
+            rz_del(f"resv:{reservation_id}")
+            rz_del(f"hold:{serial}")
+            rz_del(f"temp_blacklist:{address}:{inscription_id}")
+            rz_del(f"wl_lock:{address}")
+            rz_del(f"wl_poll:{reservation_id}")
+            print(f"[WL] Cancelled reservation {reservation_id} for serial {serial} due to polling timeout")
+        except Exception as e:
+            print(f"[WL] Error cleaning up timed out reservation {reservation_id}: {e}")
+            
 # ---------- routes ----------
 @app.route('/')
 def index():
@@ -429,6 +479,7 @@ def check_wl_eligibility():
         print(f"[WL] Error in check_wl_eligibility for {address}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# Replace the existing /claim_wl route with this
 @app.route('/claim_wl', methods=['POST'])
 def claim_wl():
     data = request.get_json(force=True) or {}
@@ -472,10 +523,10 @@ def claim_wl():
         if rz_exists(temp_blacklist_key):
             print(f"[WL] Inscription {inscription_id} temporarily blacklisted for {address}")
             return jsonify({"ok": False, "error": "Inscription temporarily locked. Please wait."}), 429
-        rz_setex(temp_blacklist_key, "locked", 600)  # Lock for 10 minutes
+        rz_setex(temp_blacklist_key, "locked", 900)  # Lock for 15 minutes
         
         # Set WL lock
-        rz_setex(lock_key, "locked", 600)  # Lock for 10 minutes
+        rz_setex(lock_key, "locked", 900)  # Lock for 15 minutes
         
         # Reserve image
         fname, serial = pick_available_filename()
@@ -490,6 +541,20 @@ def claim_wl():
                 
         # Create WL reservation
         rid = create_reservation_id(serial, ttl=900, wl=True)
+        
+        # Schedule background polling
+        rz_setex(f"wl_poll:{rid}", json.dumps({
+            "filename": fname,
+            "address": address,
+            "inscriptionId": inscription_id
+        }), 900)
+        scheduler.add_job(
+            poll_wl_mint,
+            args=[rid, fname, address, inscription_id],
+            id=f"poll_wl_{rid}",
+            max_instances=1,
+            replace_existing=True
+        )
         
         print(f"[WL] Reserved image {fname} (serial: {serial}) for {address} with reservation {rid}")
         return jsonify({
@@ -637,13 +702,32 @@ def healthz():
     return "ok", 200
 
 # ---------- Scheduler setup ----------
+# Replace the existing scheduler setup with this
 scheduler = None
 if RUN_SCHEDULER:
     try:
         scheduler = BackgroundScheduler(daemon=True)
+        # Resume pending WL polls from Redis
+        for keys in scan_keys(match_pattern="wl_poll:*", count=100):
+            for key in keys:
+                poll_data = rz_get_json(key)
+                if poll_data:
+                    try:
+                        data = json.loads(poll_data) if isinstance(poll_data, str) else poll_data
+                        rid = key.replace("wl_poll:", "")
+                        scheduler.add_job(
+                            poll_wl_mint,
+                            args=[rid, data["filename"], data["address"], data["inscriptionId"]],
+                            id=f"poll_wl_{rid}",
+                            max_instances=1,
+                            replace_existing=True
+                        )
+                        print(f"[WL] Resumed polling for reservation {rid}")
+                    except Exception as e:
+                        print(f"[WL] Error resuming poll for {key}: {e}")
         scheduler.start()
     except Exception as e:
-        pass
+        print(f"[WL] Error starting scheduler: {e}")
 
 if __name__ == '__main__':
     app.run(debug=False)
