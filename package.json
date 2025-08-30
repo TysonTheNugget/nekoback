@@ -5,10 +5,11 @@
     "build:wallet": "webpack --config webpack.config.js"
   },
   "devDependencies": {
-    "webpack": "^5.94.0",
+    "webpack": "^5.101.3",
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "@sats-connect/core": "^0.7.0",
     "sats-connect": "^1.0.0"
   }
 }

@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Neko BTC — Admin / Serials Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --ink:#0b1020; --muted:#707793; --bg:#0f1529; --card:#141b33; --chip:#1c2442;
+      --accent:#7efcff; --accent2:#d9b3ff;
+      --ok:#22c55e; --warn:#eab308; --bad:#ef4444;
+      --border: #283152;
+    }
+    html,body{margin:0;padding:0;background:linear-gradient(180deg,#101733 0%, #0a0f21 100%);color:#e9ecf6;font-family:Inter,system-ui,Segoe UI,Arial;
+      -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;}
+    .wrap{max-width:1200px;margin:32px auto;padding:0 16px;}
+    h1{font-size:28px;margin:0 0 16px;font-weight:800;letter-spacing:.2px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+    .grid{display:grid;gap:16px}
+    .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    label{font-size:12px;color:#b7bfdd;display:block;margin:0 0 6px}
+    input,button,select{
+      background:#0f1630;border:1px solid var(--border);color:#e9ecf6;border-radius:10px;
+      padding:10px 12px;font-size:14px;outline:none
+    }
+    input:focus,select:focus{border-color:#3a4a84}
+    button{cursor:pointer;font-weight:700}
+    .btn{background:linear-gradient(135deg,#2a356a,#1f2a54);border-color:#3a4a84}
+    .btn:hover{filter:brightness(1.1)}
+    .chip{background:var(--chip);padding:8px 10px;border-radius:999px;border:1px solid var(--border);font-size:12px}
+    .stat{display:flex;flex-direction:column;gap:6px}
+    .stat .v{font-size:22px;font-weight:800}
+    .muted{color:#a3acc9}
+    .table-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
+    table{border-collapse:collapse;width:100%;min-width:680px}
+    th,td{border-bottom:1px solid var(--border);padding:10px 12px;text-align:left;font-size:13px}
+    th{position:sticky;top:0;background:#11183a;z-index:2}
+    .pill{padding:4px 8px;border-radius:999px;font-size:12px;border:1px solid var(--border)}
+    .ok{background:rgba(34,197,94,.12);color:#a6f4c5}
+    .bad{background:rgba(239,68,68,.12);color:#fecaca}
+    .warn{background:rgba(234,179,8,.12);color:#fde68a}
+    .right{margin-left:auto}
+    .small{font-size:12px}
+    .search{width:240px}
+    .footer{color:#7c86aa;font-size:12px;margin-top:18px}
+    .code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Serials & State — Admin</h1>
+
+    <div class="grid g2">
+      <div class="card">
+        <div class="row">
+          <div style="flex:1;min-width:280px">
+            <label for="upstashUrl">Upstash Redis REST URL</label>
+            <input id="upstashUrl" placeholder="https://YOUR-INSTANCE.upstash.io" />
+          </div>
+          <div style="flex:1;min-width:280px">
+            <label for="upstashToken">Upstash Bearer Token</label>
+            <input id="upstashToken" placeholder="Copy your UPSTASH_REDIS_REST_TOKEN" />
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button id="loadBtn" class="btn">Load State</button>
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button id="exportBtn" class="btn" title="Export visible table to CSV">Export CSV</button>
+          </div>
+        </div>
+        <div class="footer">Tip: These values are saved to your browser only (localStorage). Don’t share this page with your token filled in.</div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <div class="stat">
+            <div class="muted small">Used Serials (set)</div>
+            <div class="v" id="usedCount">—</div>
+          </div>
+          <div class="stat">
+            <div class="muted small">Tx Records (tx:*)</div>
+            <div class="v" id="txCount">—</div>
+          </div>
+          <div class="stat">
+            <div class="muted small">Active Holds (hold:*)</div>
+            <div class="v" id="holdCount">—</div>
+          </div>
+          <div class="stat">
+            <div class="muted small">Active Reservations (resv:*)</div>
+            <div class="v" id="resvCount">—</div>
+          </div>
+          <div class="stat">
+            <div class="muted small">Blacklisted Inscriptions</div>
+            <div class="v" id="blackCount">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FILTER BAR -->
+    <div class="card" style="margin-top:16px">
+      <div class="row">
+        <div class="chip">View:</div>
+        <select id="viewSel">
+          <option value="serials">Stored Serials (from tx:*)</option>
+          <option value="usedset">used_serials (set)</option>
+          <option value="tx">Transactions (tx:*)</option>
+          <option value="holds">Holds (hold:*)</option>
+          <option value="resv">Reservations (resv:*)</option>
+          <option value="blacklist">Blacklisted Inscriptions</option>
+        </select>
+        <input id="searchBox" class="search" placeholder="Search…" />
+        <span class="right chip" id="statusChip">Idle</span>
+      </div>
+    </div>
+
+    <!-- TABLES -->
+    <div class="card" style="margin-top:16px">
+      <div class="table-wrap">
+        <table id="dataTable">
+          <thead id="thead"></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="footer">Showing <span id="shownCount">0</span> of <span id="totalCount">0</span></div>
+    </div>
+
+    <div class="footer">Built for your Neko BTC app state keys (<span class="code">tx:*</span>, <span class="code">used_serials</span>, <span class="code">hold:*</span>, <span class="code">resv:*</span>, <span class="code">blacklisted_inscriptions</span>).</div>
+  </div>
+
+  <script>
+    // ----- Simple state
+    const el = id => document.getElementById(id);
+    const state = {
+      upstashUrl: '',
+      token: '',
+      raw: {
+        txKeys: [],
+        txRows: [],       // [{txId, serial, wl, pngText}]
+        serialsFromTx: [],// unique serials
+        usedSet: [],      // from used_serials
+        holds: [],        // [{key, serial, holder, ts, exp, ttl}]
+        resv: [],         // [{key, rid, serial, wl, ttl}]
+        blacklist: []     // inscription ids
+      }
+    };
+
+    // ----- Storage helpers
+    function saveLocal(){
+      localStorage.setItem('admin_upstash_url', state.upstashUrl);
+      localStorage.setItem('admin_upstash_token', state.token);
+    }
+    function loadLocal(){
+      state.upstashUrl = localStorage.getItem('admin_upstash_url') || '';
+      state.token      = localStorage.getItem('admin_upstash_token') || '';
+      el('upstashUrl').value = state.upstashUrl;
+      el('upstashToken').value = state.token;
+    }
+
+    // ----- Upstash REST helpers
+    async function rzGet(path){
+      const url = (state.upstashUrl.replace(/\/+$/,'') + path);
+      const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + state.token }});
+      if(!r.ok) throw new Error(`HTTP ${r.status} for ${path}`);
+      const j = await r.json();
+      return j?.result ?? j;
+    }
+    async function scanAll(match, count=1000){
+      let cursor = "0";
+      const keys = [];
+      do{
+        const q = `${state.upstashUrl.replace(/\/+$/,'')}/scan/${cursor}?count=${count}` + (match?`&match=${encodeURIComponent(match)}`:'');
+        const r = await fetch(q, { headers:{Authorization:'Bearer '+state.token}});
+        if(!r.ok) throw new Error(`HTTP ${r.status} during SCAN`);
+        const j = await r.json();
+        let next="0", batch=[];
+        if(Array.isArray(j) && j.length>=2){ next = String(j[0]); batch = j[1]||[]; }
+        else if(j && j.result){
+          if(Array.isArray(j.result) && j.result.length>=2){ next = String(j.result[0]); batch = j.result[1]||[]; }
+          else if(j.result.cursor !== undefined){ next = String(j.result.cursor||"0"); batch = j.result.keys||[]; }
+        }
+        keys.push(...batch);
+        cursor = next;
+      } while(cursor !== "0");
+      return keys;
+    }
+    async function hgetall(key){
+      const res = await rzGet(`/hgetall/${encodeURIComponent(key)}`);
+      // Upstash may return list [k,v,k,v...] or object
+      if(Array.isArray(res)){
+        const it = res[Symbol.iterator]();
+        const o={};
+        for(let k of it){ o[String(k)] = String(it.next().value ?? ''); }
+        return o;
+      }
+      return res || {};
+    }
+    async function smembers(key){
+      const res = await rzGet(`/smembers/${encodeURIComponent(key)}`);
+      return Array.isArray(res) ? res : [];
+    }
+    async function getVal(key){
+      return await rzGet(`/get/${encodeURIComponent(key)}`);
+    }
+    async function ttl(key){
+      try { return Number(await rzGet(`/ttl/${encodeURIComponent(key)}`)); }
+      catch{ return -2; }
+    }
+
+    function setStatus(t){ el('statusChip').textContent = t; }
+
+    // ----- Load all
+    async function loadAll(){
+      const url = el('upstashUrl').value.trim();
+      const tok = el('upstashToken').value.trim();
+      if(!/^https?:\/\//i.test(url)) { alert('Enter a valid Upstash URL'); return; }
+      if(!tok){ alert('Paste your Upstash token'); return; }
+      state.upstashUrl = url; state.token = tok; saveLocal();
+      setStatus('Scanning…');
+
+      // 1) used_serials set
+      const usedSet = await smembers('used_serials');
+      el('usedCount').textContent = usedSet.length.toLocaleString();
+
+      // 2) tx:* hashes
+      const txKeys = await scanAll('tx:*', 1000);
+      el('txCount').textContent = txKeys.length.toLocaleString();
+      const txRows = [];
+      for(const k of txKeys){
+        const row = await hgetall(k);
+        txRows.push({
+          txId: k.replace(/^tx:/,''),
+          serial: String(row.serial||''),
+          wl: String(row.wl||'') === '1',
+          pngText: row.pngText || ''
+        });
+      }
+      // unique serials from tx
+      const sset = new Set(txRows.map(r=>r.serial).filter(Boolean));
+      const serialsFromTx = Array.from(sset);
+
+      // 3) holds (hold:*)
+      const holdKeys = await scanAll('hold:*', 1000);
+      el('holdCount').textContent = holdKeys.length.toLocaleString();
+      const holds = [];
+      for(const hk of holdKeys){
+        const v = await getVal(hk);
+        let meta={}; try{ meta = typeof v==='string' ? JSON.parse(v) : (v||{});}catch{}
+        const t = await ttl(hk);
+        const serial = hk.replace(/^hold:/,'');
+        holds.push({ key: hk, serial, holder: meta.holder||'', ts: meta.ts||0, exp: meta.exp||0, ttl: t });
+      }
+
+      // 4) reservations (resv:*)
+      const resvKeys = await scanAll('resv:*', 1000);
+      el('resvCount').textContent = resvKeys.length.toLocaleString();
+      const resv = [];
+      for(const rk of resvKeys){
+        const v = await getVal(rk);
+        let meta={}; try{ meta = typeof v==='string' ? JSON.parse(v) : (v||{});}catch{}
+        const t = await ttl(rk);
+        resv.push({
+          key: rk, rid: rk.replace(/^resv:/,''), serial: meta.serial||'', wl: !!meta.wl, ttl: t
+        });
+      }
+
+      // 5) blacklist set
+      const bl = await smembers('blacklisted_inscriptions');
+      el('blackCount').textContent = bl.length.toLocaleString();
+
+      // Save into state
+      state.raw.usedSet = usedSet;
+      state.raw.txKeys = txKeys;
+      state.raw.txRows = txRows;
+      state.raw.serialsFromTx = serialsFromTx;
+      state.raw.holds = holds;
+      state.raw.resv = resv;
+      state.raw.blacklist = bl;
+
+      setStatus('Loaded');
+      render();
+    }
+
+    // ----- Render helpers
+    function fmtTTL(ttl){
+      if(ttl < 0) return 'expired';
+      const m = Math.floor(ttl/60), s = ttl%60;
+      return `${m}m ${s}s`;
+    }
+    function fmtTs(ts){
+      if(!ts) return '';
+      try{ return new Date(ts*1000).toLocaleString(); }catch{ return String(ts) }
+    }
+
+    function filterData(arr, cols){
+      const q = el('searchBox').value.trim().toLowerCase();
+      if(!q) return arr;
+      return arr.filter(row => {
+        return cols.some(c => (String(row[c]??'').toLowerCase().includes(q)));
+      });
+    }
+
+    function render(){
+      const view = el('viewSel').value;
+      let head=[], rows=[], cols=[], csvCols=[];
+
+      if(view==='serials'){
+        head = ['#','Serial','First TxId'];
+        // map serial -> first txId seen
+        const first = {};
+        for(const r of state.raw.txRows){
+          if(!first[r.serial] && r.serial) first[r.serial] = r.txId;
+        }
+        const data = state.raw.serialsFromTx.map(s => ({serial:s, txId:first[s]||''}));
+        const filtered = filterData(data, ['serial','txId']);
+        rows = filtered.map((r,i)=>[
+          i+1, r.serial, r.txId
+        ]);
+        cols = ['idx','serial','txId'];
+        csvCols = ['#','serial','txId'];
+        el('totalCount').textContent = data.length;
+        el('shownCount').textContent = filtered.length;
+      }
+      else if(view==='usedset'){
+        head = ['#','Serial (used_serials member)'];
+        const data = state.raw.usedSet.map(s=>({serial:s}));
+        const filtered = filterData(data, ['serial']);
+        rows = filtered.map((r,i)=>[i+1, r.serial]);
+        cols = ['idx','serial']; csvCols = ['#','serial'];
+        el('totalCount').textContent = data.length;
+        el('shownCount').textContent = filtered.length;
+      }
+      else if(view==='tx'){
+        head = ['#','TxId','Serial','WL','pngText'];
+        const data = state.raw.txRows;
+        const filtered = filterData(data, ['txId','serial','pngText']);
+        rows = filtered.map((r,i)=>[
+          i+1, r.txId, r.serial, r.wl ? 'Yes' : 'No', r.pngText
+        ]);
+        cols = ['idx','txId','serial','wl','pngText']; csvCols = head;
+        el('totalCount').textContent = data.length;
+        el('shownCount').textContent = filtered.length;
+      }
+      else if(view==='holds'){
+        head = ['#','Serial','Holder','TTL','Started','Expires'];
+        const data = state.raw.holds;
+        const filtered = filterData(data, ['serial','holder']);
+        rows = filtered.map((r,i)=>[
+          i+1, r.serial, r.holder || '', fmtTTL(r.ttl), fmtTs(r.ts), fmtTs(r.exp)
+        ]);
+        cols = ['idx','serial','holder','ttl','ts','exp']; csvCols = head;
+        el('totalCount').textContent = data.length;
+        el('shownCount').textContent = filtered.length;
+      }
+      else if(view==='resv'){
+        head = ['#','ReservationId','Serial','WL','TTL'];
+        const data = state.raw.resv;
+        const filtered = filterData(data, ['rid','serial']);
+        rows = filtered.map((r,i)=>[
+          i+1, r.rid, r.serial, r.wl ? 'Yes' : 'No', fmtTTL(r.ttl)
+        ]);
+        cols = ['idx','rid','serial','wl','ttl']; csvCols = head;
+        el('totalCount').textContent = data.length;
+        el('shownCount').textContent = filtered.length;
+      }
+      else if(view==='blacklist'){
+        head = ['#','InscriptionId (blacklisted)'];
+        const data = state.raw.blacklist.map(x=>({id:x}));
+        const filtered = filterData(data, ['id']);
+        rows = filtered.map((r,i)=>[i+1, r.id]);
+        cols = ['idx','id']; csvCols = head;
+        el('totalCount').textContent = data.length;
+        el('shownCount').textContent = filtered.length;
+      }
+
+      // Build table
+      el('thead').innerHTML = '<tr>' + head.map(h=>`<th>${h}</th>`).join('') + '</tr>';
+      el('tbody').innerHTML = rows.map(r=>(
+        '<tr>' + r.map((c,ci)=>{
+          if(ci===0) return `<td class="muted">${c}</td>`;
+          return `<td class="code">${(c===undefined||c===null)?'':String(c)}</td>`;
+        }).join('') + '</tr>'
+      )).join('');
+
+      // Hook CSV exporter to current rows/headers
+      window.__currentCsv = { head, rows };
+    }
+
+    function toCSV(head, rows){
+      const esc = v => {
+        const s = String(v ?? '');
+        if(/[",\n]/.test(s)) return `"${s.replace(/"/g,'""')}"`;
+        return s;
+      };
+      return head.map(esc).join(',') + '\n' + rows.map(r=>r.map(esc).join(',')).join('\n');
+    }
+
+    // ----- Events
+    el('loadBtn').addEventListener('click', loadAll);
+    el('viewSel').addEventListener('change', render);
+    el('searchBox').addEventListener('input', render);
+    el('exportBtn').addEventListener('click', ()=>{
+      const cur = window.__currentCsv || {head:[],rows:[]};
+      const csv = toCSV(cur.head, cur.rows);
+      const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `neko-admin-${el('viewSel').value}.csv`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 500);
+    });
+
+    // init
+    loadLocal();
+  </script>
+</body>
+</html>
