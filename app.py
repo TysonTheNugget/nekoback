@@ -973,6 +973,26 @@ def verify_and_store():
         print(f"[WL] Error in verify_and_store for {txId}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.route('/admin/wl_debug', methods=['POST'])
+def wl_debug():
+    data = request.get_json(force=True) or {}
+    address = data.get('address', '').strip()
+    if not address:
+        return jsonify({"ok": False, "error": "Missing address"}), 400
+    wl_ids = load_wl_inscriptions()
+    wallet_ids = fetch_wallet_inscriptions(address)
+    wl_set = set(wl_ids)
+    inter = [i for i in wallet_ids if i in wl_set]
+
+    return jsonify({
+        "ok": True,
+        "wl_count": len(wl_ids),
+        "wallet_count": len(wallet_ids),
+        "intersection_count": len(inter),
+        "intersection_sample": inter[:5],
+        "wallet_sample": wallet_ids[:5],
+    })
+
 @app.route('/check_scanner', methods=['POST'])
 def check_scanner():
     data = request.get_json(force=True) or {}
