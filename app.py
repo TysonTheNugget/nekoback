@@ -25,6 +25,13 @@ TOTAL_SUPPLY = int(os.getenv("TOTAL_SUPPLY", "10000"))
 SERIAL_REGEX = re.compile(r"\b(\d{10})\b")
 RUN_SCHEDULER = os.getenv("RUN_SCHEDULER", "1") not in ("0", "false", "False", "")
 HIRO_API_TOKEN = "1423e3815899d351c41529064e5b9a52"
+PUBLIC_MINT_START_TS = int(os.getenv("PUBLIC_MINT_START_TS", "0"))  # epoch seconds; 0 = open now
+
+def is_public_mint_open() -> bool:
+    try:
+        return int(time.time()) >= int(PUBLIC_MINT_START_TS)
+    except Exception:
+        return True
 
 # =====================================================
 current_directory = os.path.dirname(os.path.abspath(__file__))
@@ -404,6 +411,15 @@ def randomize_image():
 
 @app.route('/reserve_for_image', methods=['POST'])
 def reserve_for_image():
+    # Block until public mint start
+    if not is_public_mint_open():
+        return jsonify({
+            "ok": False,
+            "error": "Public mint not open yet",
+            "mintOpensAt": _read_public_mint_start_ts(),        # unix seconds
+            "secondsUntilOpen": public_mint_seconds_until_open()
+        }), 403
+
     data = request.get_json(force=True)
     fname_wanted = (data or {}).get("filename")
     holder_id = (data or {}).get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon"
@@ -427,6 +443,7 @@ def reserve_for_image():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+
 @app.route('/supply', methods=['GET'])
 def supply():
     try:
@@ -438,12 +455,24 @@ def supply():
 
 @app.route('/prepare_inscription', methods=['POST'])
 def prepare_inscription():
+    # Block until public mint opens
+    if not is_public_mint_open():
+        return jsonify({
+            "ok": False,
+            "error": "Public mint not open yet",
+            "mintOpensAt": _read_public_mint_start_ts(),
+            "secondsUntilOpen": public_mint_seconds_until_open()
+        }), 403
+
     if not APP_FEE_ADDRESS or APP_FEE_SATS <= 0:
-        return jsonify({"error": "Server missing APP_FEE_ADDRESS/APP_FEE_SATS"}), 500
+        return jsonify({"ok": False, "error": "Server missing APP_FEE_ADDRESS/APP_FEE_SATS"}), 500
+
     ts = int(time.time())
     payload = f"{APP_FEE_ADDRESS}:{APP_FEE_SATS}:{ts}"
     sig = sign_data(payload)
+
     return jsonify({
+        "ok": True,
         "appFeeAddress": APP_FEE_ADDRESS,
         "appFee": APP_FEE_SATS,
         "ts": ts,
@@ -726,7 +755,14 @@ def rebuild_used_serials():
 def healthz():
     return "ok", 200
 
-
+@app.route('/config', methods=['GET'])
+def config():
+    return jsonify({
+        "now": int(time.time()),
+        "publicMintStartTs": int(PUBLIC_MINT_START_TS),
+        "publicMintOpen": is_public_mint_open()
+    })
+    
 # Replace the existing scheduler setup with this
 scheduler = None
 if RUN_SCHEDULER:

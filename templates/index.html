@@ -244,7 +244,10 @@
     </header>
     <div>
       <button id="claimWLButton" class="btn">Claim WL</button>
-      <button id="mintButton" class="btn">Mint</button>
+      <button id="mintButton" class="btn" disabled>
+        <span class="btn-label">Mint</span>
+        <span id="mintEtaPill" class="pill">Opens in 00:00</span>
+      </button>
     </div>
     <div class="image-wrap">
       <div class="image-container">
@@ -380,57 +383,57 @@
       }
     }
 
-async function claimWL(){
-    const btn = $id('claimWLButton');
-    btn.disabled = true;
-    $id('mintButton').disabled = true;
-    setStatus('Connecting wallet…');
-    const address = await connectWallet();
-    if (!address) {
+    async function claimWL() {
+      const btn = $id('claimWLButton');
+      btn.disabled = true;
+      $id('mintButton').disabled = true;
+      setStatus('Connecting wallet…');
+      const address = await connectWallet();
+      if (!address) {
         btn.disabled = false;
         $id('mintButton').disabled = false;
         return;
-    }
-    setStatus('Checking whitelist eligibility…');
-    try {
+      }
+      setStatus('Checking whitelist eligibility…');
+      try {
         const res = await fetch('/check_wl_eligibility', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address })
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address })
         });
         const data = await res.json();
         if (!data.ok || !data.eligible) {
-            setStatus(data.error || 'Not eligible for whitelist.');
-            btn.disabled = false;
-            $id('mintButton').disabled = false;
-            return;
+          setStatus(data.error || 'Not eligible for whitelist.');
+          btn.disabled = false;
+          $id('mintButton').disabled = false;
+          return;
         }
         // Select first valid inscription
         const inscriptionId = data.inscriptions[0];
         setStatus('Claiming whitelist spot…');
         const claimRes = await fetch('/claim_wl', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
-            body: JSON.stringify({ address, inscriptionId })
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
+          body: JSON.stringify({ address, inscriptionId })
         });
         const claim = await claimRes.json();
         if (claim.error && claim.error.includes("Another WL mint is in progress")) {
-            setStatus("Another WL mint is in progress. Please wait up to 15 minutes.");
-            btn.disabled = false;
-            $id('mintButton').disabled = false;
-            return;
+          setStatus("Another WL mint is in progress. Please wait up to 15 minutes.");
+          btn.disabled = false;
+          $id('mintButton').disabled = false;
+          return;
         }
         if (claim.error && claim.error.includes("Inscription temporarily locked")) {
-            setStatus("Inscription locked. Please wait up to 15 minutes.");
-            btn.disabled = false;
-            $id('mintButton').disabled = false;
-            return;
+          setStatus("Inscription locked. Please wait up to 15 minutes.");
+          btn.disabled = false;
+          $id('mintButton').disabled = false;
+          return;
         }
         if (!claim.ok) {
-            setStatus(claim.error || 'Failed to claim whitelist spot.');
-            btn.disabled = false;
-            $id('mintButton').disabled = false;
-            return;
+          setStatus(claim.error || 'Failed to claim whitelist spot.');
+          btn.disabled = false;
+          $id('mintButton').disabled = false;
+          return;
         }
         reservationId = claim.reservationId;
         reservedFilename = claim.filename;
@@ -443,48 +446,48 @@ async function claimWL(){
         const prepRes = await fetch('/prepare_wl_inscription', { method: 'POST' });
         const prep = await prepRes.json();
         if (!prep.appFeeAddress || !prep.appFee) {
-            setStatus('Server missing WL fee config');
-            btn.disabled = false;
-            $id('mintButton').disabled = false;
-            reservationId = null;
-            reservedFilename = null;
-            wlInscriptionId = null;
-            isWLReservation = false;
-            return;
+          setStatus('Server missing WL fee config');
+          btn.disabled = false;
+          $id('mintButton').disabled = false;
+          reservationId = null;
+          reservedFilename = null;
+          wlInscriptionId = null;
+          isWLReservation = false;
+          return;
         }
         const base64Image = await getImageAsBase64(`/file/${reservedFilename}`);
         await window.SatsConnect.createInscription({
-            payload: {
-                network: { type: prep.network || 'Mainnet' },
-                contentType: 'image/png',
-                content: base64Image,
-                payloadType: 'BASE_64',
-                appFeeAddress: prep.appFeeAddress,
-                appFee: prep.appFee
-            },
-            onFinish: () => {}, // Ignore due to Sats-Connect unreliability
-            onCancel: () => {}  // Ignore to prevent premature cancellation
+          payload: {
+            network: { type: prep.network || 'Mainnet' },
+            contentType: 'image/png',
+            content: base64Image,
+            payloadType: 'BASE_64',
+            appFeeAddress: prep.appFeeAddress,
+            appFee: prep.appFee
+          },
+          onFinish: () => { }, // Ignore due to Sats-Connect unreliability
+          onCancel: () => { }  // Ignore to prevent premature cancellation
         });
         btn.disabled = false;
         $id('mintButton').disabled = false;
-    } catch (err) {
+      } catch (err) {
         console.error(err);
         setStatus('Error during WL claim: ' + (err.message || 'Unknown error'));
         btn.disabled = false;
         $id('mintButton').disabled = false;
         if (reservationId && reservedFilename && window.ordinalAddress && wlInscriptionId) {
-            fetch('/cancel_wl_reservation', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ reservationId, filename: reservedFilename, address: window.ordinalAddress, inscriptionId: wlInscriptionId })
-            });
+          fetch('/cancel_wl_reservation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reservationId, filename: reservedFilename, address: window.ordinalAddress, inscriptionId: wlInscriptionId })
+          });
         }
         reservationId = null;
         reservedFilename = null;
         wlInscriptionId = null;
         isWLReservation = false;
+      }
     }
-}
 
 
     // ===== Mint flow (unchanged for regular mint) =====
@@ -649,6 +652,93 @@ async function claimWL(){
       setInterval(refreshSupply, 15000);
       createFlyers();
     });
+
+
+    (async function setupPublicMintCountdownOnButton() {
+      const btn = document.getElementById('mintButton');
+      const pill = document.getElementById('mintEtaPill');
+
+      // Guard: if elements missing, bail silently
+      if (!btn || !pill) return;
+
+      async function fetchConfig() {
+        try {
+          const r = await fetch('/config', { cache: 'no-store' });
+          if (!r.ok) throw new Error('config http ' + r.status);
+          return await r.json();
+        } catch {
+          // If config fails, assume open so users aren’t blocked by frontend
+          return { now: Math.floor(Date.now() / 1000), publicMintStartTs: 0, publicMintOpen: true };
+        }
+      }
+
+      function formatETA(seconds) {
+        if (seconds <= 0) return "Opening…";
+        const d = Math.floor(seconds / 86400);
+        seconds %= 86400;
+        const h = Math.floor(seconds / 3600);
+        seconds %= 3600;
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        const parts = [];
+        if (d) parts.push(`${d}d`);
+        if (h) parts.push(`${h}h`);
+        if (m) parts.push(`${m}m`);
+        parts.push(`${s}s`);
+        return parts.join(" ");
+      }
+
+      function lockButton() {
+        btn.disabled = true;
+        btn.classList.add('opacity-60');
+        btn.classList.add('pointer-events-none');
+        pill.classList.add('show');
+      }
+
+      function unlockButton() {
+        btn.disabled = false;
+        btn.classList.remove('opacity-60', 'pointer-events-none');
+        pill.classList.remove('show');
+      }
+
+      // Initial config
+      const cfg = await fetchConfig();
+      const startTs = Number(cfg.publicMintStartTs || 0);
+
+      // If already open (or no start set), just unlock and hide pill
+      if (cfg.publicMintOpen || !startTs) {
+        unlockButton();
+        return;
+      }
+
+      // Keep locked and update ETA using server time as baseline
+      lockButton();
+      let serverNow = Number(cfg.now || Math.floor(Date.now() / 1000));
+
+      function tick() {
+        const remaining = startTs - serverNow;
+        if (remaining <= 0) {
+          unlockButton();
+          clearInterval(timer);
+          return;
+        }
+        pill.textContent = `Opens in ${formatETA(remaining)}`;
+        serverNow += 1;
+      }
+
+      // Start ticking
+      tick();
+      const timer = setInterval(tick, 1000);
+
+      // Re-sync server time every minute (handles tab sleep/lag)
+      setInterval(async () => {
+        try {
+          const fresh = await fetchConfig();
+          if (fresh.publicMintOpen) { unlockButton(); clearInterval(timer); }
+          else if (typeof fresh.now === 'number') serverNow = fresh.now;
+        } catch { }
+      }, 60000);
+    })();
   </script>
 </body>
 
