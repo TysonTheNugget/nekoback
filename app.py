@@ -30,6 +30,8 @@ PUBLIC_MINT_START_TS = int(os.getenv("PUBLIC_MINT_START_TS", "0"))  # epoch seco
 MEMPOOL_BASE = "https://mempool.space/api"
 CONTENT_BASE = "https://api.hiro.so/ordinals/v1/inscriptions"
 PNG_SIG = b'\x89PNG\r\n\x1a\n'
+WL_INSCRIPTIONS_CACHE = None
+WL_INSCRIPTIONS_MTIME = 0
 
 def get_case_insensitive(text_map: dict, key: str):
     for k in text_map:
