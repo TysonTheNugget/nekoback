@@ -32,40 +32,118 @@ CONTENT_BASE = "https://api.hiro.so/ordinals/v1/inscriptions"
 PNG_SIG = b'\x89PNG\r\n\x1a\n'
 WL_INSCRIPTIONS_CACHE = None
 WL_INSCRIPTIONS_MTIME = 0
+WL_INSCRIPTIONS_LAST_SOURCE = None
+INSCRIPTION_ID_RE = re.compile(r'^[0-9a-f]{64}i\d+$', re.I)
 PNG_TEXT_KEY_HINT = None
 
 
-def load_wl_inscriptions() -> set:
+def _extract_id_from_obj(obj: dict) -> str | None:
+    """Try common keys, then scan all values for an inscription id."""
+    for k in ('id', 'inscription', 'inscriptionId', 'inscription_id', 'inscriptionid'):
+        v = obj.get(k)
+        if isinstance(v, str):
+            s = v.strip()
+            if INSCRIPTION_ID_RE.match(s):
+                return s
+    for v in obj.values():
+        if isinstance(v, str):
+            s = v.strip()
+            if INSCRIPTION_ID_RE.match(s):
+                return s
+    return None
+
+def _normalize_wl_payload(data) -> set[str]:
+    """Accept multiple JSON shapes and normalize to a set of inscription IDs."""
+    out: set[str] = set()
+    total = 0
+    dicts_no_id = 0
+
+    if isinstance(data, list):
+        total = len(data)
+        for item in data:
+            if isinstance(item, str):
+                s = item.strip()
+                if INSCRIPTION_ID_RE.match(s):
+                    out.add(s)
+            elif isinstance(item, dict):
+                ins = _extract_id_from_obj(item)
+                if ins:
+                    out.add(ins)
+                else:
+                    dicts_no_id += 1
+            # ignore other types silently
+
+    elif isinstance(data, dict):
+        # Case 1: {"inscriptions": [...]}
+        if isinstance(data.get("inscriptions"), (list, tuple)):
+            return _normalize_wl_payload(data["inscriptions"])
+
+        # Case 2: mapping-like {"<id>": true, ...} or nested objects
+        for k, v in data.items():
+            total += 1
+            if isinstance(k, str) and INSCRIPTION_ID_RE.match(k.strip()):
+                out.add(k.strip())
+            elif isinstance(v, str) and INSCRIPTION_ID_RE.match(v.strip()):
+                out.add(v.strip())
+            elif isinstance(v, dict):
+                ins = _extract_id_from_obj(v)
+                if ins:
+                    out.add(ins)
+                else:
+                    dicts_no_id += 1
+            elif isinstance(v, list):
+                # Sometimes nested lists under other keys
+                out |= _normalize_wl_payload(v)
+
+    else:
+        print(f"[WL] Unsupported WL JSON top-level type: {type(data).__name__}")
+
+    print(f"[WL] WL normalize: total_items_scanned={total}, ids_collected={len(out)}, dicts_without_id={dicts_no_id}")
+    return out
+
+def load_wl_inscriptions() -> set[str]:
     """
-    Load WL inscription IDs from clean_inscriptions.json with verbose logging.
-    Tries env WL_INSCRIPTIONS_PATH first, then app.root_path/clean_inscriptions.json,
-    then CWD/clean_inscriptions.json.
-    Caches contents until the file mtime changes.
+    Load WL inscription IDs with verbose diagnostics.
+    Search order:
+      1) WL_INSCRIPTIONS_PATH (env) if set
+      2) app.root_path/clean_inscriptions.json
+      3) app.root_path/static/clean_inscriptions.json
+      4) app.root_path/static/Singles/clean_inscriptions.json
+      5) CWD/clean_inscriptions.json
+    Caches until mtime changes.
     """
     import os, json, time
-    global WL_INSCRIPTIONS_CACHE, WL_INSCRIPTIONS_MTIME
+    global WL_INSCRIPTIONS_CACHE, WL_INSCRIPTIONS_MTIME, WL_INSCRIPTIONS_LAST_SOURCE
 
-    candidates = []
     env_path = os.getenv("WL_INSCRIPTIONS_PATH", "").strip()
+    candidates = []
     if env_path:
         candidates.append(env_path)
     candidates.append(os.path.join(app.root_path, "clean_inscriptions.json"))
+    candidates.append(os.path.join(app.root_path, "static", "clean_inscriptions.json"))
+    candidates.append(os.path.join(app.root_path, "static", "Singles", "clean_inscriptions.json"))
     candidates.append(os.path.join(os.getcwd(), "clean_inscriptions.json"))
+
+    # Deduplicate while preserving order
+    seen = set()
+    uniq_candidates = []
+    for p in candidates:
+        ap = os.path.abspath(p)
+        if ap not in seen:
+            uniq_candidates.append(ap)
+            seen.add(ap)
 
     print("[WL] ===== WL LOAD DIAGNOSTICS =====")
     print(f"[WL] CWD: {os.getcwd()}")
     print(f"[WL] app.root_path: {app.root_path}")
     print(f"[WL] WL_INSCRIPTIONS_PATH (env): {env_path or '(unset)'}")
     print(f"[WL] Candidate paths (in order):")
-    for p in candidates:
+    for p in uniq_candidates:
         print(f"      - {p}")
 
     last_err = None
-    for path in candidates:
+    for path in uniq_candidates:
         try:
-            if not os.path.isabs(path):
-                path = os.path.abspath(path)
-
             exists = os.path.exists(path)
             print(f"[WL] Checking: {path} (exists={exists})")
             if not exists:
@@ -75,15 +153,17 @@ def load_wl_inscriptions() -> set:
             mtime = os.path.getmtime(path)
             print(f"[WL]   -> size={size} bytes, mtime={mtime} ({time.ctime(mtime)})")
 
-            # Only re-read if cache is empty or file changed
-            if WL_INSCRIPTIONS_CACHE is None or mtime != WL_INSCRIPTIONS_MTIME:
+            # Only re-read if first load or file changed
+            if WL_INSCRIPTIONS_CACHE is None or mtime != WL_INSCRIPTIONS_MTIME or WL_INSCRIPTIONS_LAST_SOURCE != path:
                 with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, list):
-                    WL_INSCRIPTIONS_CACHE = set(data)
-                else:
-                    WL_INSCRIPTIONS_CACHE = set(data.get("inscriptions", []))
+                    raw = json.load(f)
+
+                ids = _normalize_wl_payload(raw)
+                if not ids:
+                    print(f"[WL] WARNING: No valid inscription IDs found in {path}.")
+                WL_INSCRIPTIONS_CACHE = ids
                 WL_INSCRIPTIONS_MTIME = mtime
+                WL_INSCRIPTIONS_LAST_SOURCE = path
                 print(f"[WL] Loaded {len(WL_INSCRIPTIONS_CACHE)} WL inscriptions from {path}")
 
             # Sanity sample
@@ -96,7 +176,6 @@ def load_wl_inscriptions() -> set:
             last_err = e
             print(f"[WL] ERROR reading {path}: {e}")
 
-    # If we got here, all candidates failed
     print("[WL] FAILED to load WL inscriptions from all candidates.")
     if last_err:
         print(f"[WL] Last error: {last_err}")
