@@ -302,45 +302,97 @@ def load_wl_inscriptions() -> set:
         print(f"[WL] Error reading WL at {path}: {e}")
         return set()
 
-HIRO_API_TOKEN = os.getenv("HIRO_API_TOKEN", "")
-def fetch_wallet_inscriptions(address: str) -> list[str]:
+HIRO_API_TOKEN = os.getenv("HIRO_API_TOKEN", "1423e3815899d351c41529064e5b9a52")
+def fetch_wallet_inscriptions(address: str) -> list:
     """
-    Pull all inscriptions owned by the given address via Hiro (paginated).
+    Fetch ALL inscriptions for a wallet from Hiro with limit<=60, robust pagination,
+    and verbose logs so you can see what's going on in Render logs.
     """
     headers = {}
     if HIRO_API_TOKEN:
         headers["Authorization"] = f"Bearer {HIRO_API_TOKEN}"
 
     base = "https://api.hiro.so/ordinals/v1/inscriptions"
-    limit = 200
-    offset = 0
-    out = []
+    limit_candidates = [60, 50, 40, 30, 20]  # Hiro requires <= 60
+
+    all_ids = []
     seen = set()
+
     try:
-        for _ in range(100):  # hard cap
-            url = f"{base}?address={address}&limit={limit}&offset={offset}"
-            r = requests.get(url, headers=headers, timeout=20)
-            if r.status_code >= 400:
-                print(f"[WL] Hiro error {r.status_code}: {r.text[:200]}")
+        for limit in limit_candidates:
+            offset = 0
+            page = 0
+            plateau_pages = 0
+            print(f"[WL] Hiro wallet fetch start addr={address} limit={limit}")
+
+            while True:
+                url = f"{base}?address={address}&limit={limit}&offset={offset}"
+                try:
+                    r = requests.get(url, headers=headers, timeout=25)
+                except Exception as e:
+                    print(f"[WL] Hiro request error: {e} url={url}")
+                    break
+
+                if r.status_code == 400 and "limit must be <=" in (r.text or ""):
+                    print(f"[WL] Hiro 400 for limit={limit}; trying smaller limit")
+                    break  # try next smaller limit from the list
+
+                if r.status_code == 429:
+                    retry_after = r.headers.get("Retry-After")
+                    sleep_s = int(retry_after) if retry_after and retry_after.isdigit() else 2
+                    print(f"[WL] Hiro 429; sleeping {sleep_s}s then retrying same page")
+                    time.sleep(sleep_s)
+                    continue
+
+                if r.status_code >= 400:
+                    print(f"[WL] Hiro HTTP {r.status_code} url={url} body={(r.text or '')[:300]}")
+                    break
+
+                try:
+                    j = r.json() or {}
+                except Exception as e:
+                    print(f"[WL] Hiro JSON parse error: {e} body={(r.text or '')[:200]}")
+                    break
+
+                results = j.get("results") or []
+                page += 1
+
+                # collect ids
+                new_this_page = 0
+                for it in results:
+                    _id = it.get("id")
+                    if isinstance(_id, str) and _id not in seen:
+                        seen.add(_id)
+                        all_ids.append(_id)
+                        new_this_page += 1
+
+                print(f"[WL] page={page} limit={limit} offset={offset} "
+                      f"page_count={len(results)} new_ids={new_this_page} total={len(all_ids)}")
+
+                # advance
+                if len(results) == 0:
+                    print("[WL] stop: empty page")
+                    break
+
+                plateau_pages = plateau_pages + 1 if new_this_page == 0 else 0
+                if plateau_pages >= 2:
+                    print("[WL] stop: plateau (API ignoring offset/limit?)")
+                    break
+
+                offset += len(results)
+
+                if page >= 200:
+                    print("[WL] stop: safety page cap (200)")
+                    break
+
+            # got something; no need to try an even smaller limit
+            if all_ids:
                 break
-            j = r.json() or {}
-            results = j.get("results") or []
-            if not results:
-                break
-            new = 0
-            for it in results:
-                _id = it.get("id")
-                if isinstance(_id, str) and _id not in seen:
-                    seen.add(_id)
-                    out.append(_id)
-                    new += 1
-            offset += len(results)
-            if new == 0:
-                break
-        print(f"[WL] Wallet {address} has {len(out)} inscriptions (sample {out[:3]})")
-        return out
+
+        print(f"[WL] Wallet {address} has {len(all_ids)} inscriptions (sample {all_ids[:5]})")
+        return all_ids
     except Exception as e:
-        print(f"[WL] fetch_wallet_inscriptions error for {address}: {e}")
+        print(f"[WL] fetch_wallet_inscriptions fatal for {address}: {e}")
         return []
 
 # ---------- core rebuild logic ----------
