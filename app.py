@@ -152,13 +152,49 @@ def load_wl_inscriptions():
     return set()
         
 def fetch_wallet_inscriptions(address: str) -> list:
-    """Best-effort wallet inscriptions fetch (fallback only)."""
+    """
+    Fetch ALL inscriptions currently held by an address from Hiro API.
+    Handles pagination, uses HIRO_API_TOKEN if available, and logs diagnostics.
+    """
+    base = "https://api.hiro.so/ordinals/v1/inscriptions"
+    limit = 200  # max per page (as allowed by API)
+    offset = 0
+    out = []
+    headers = {}
+    if HIRO_API_TOKEN:
+        headers["Authorization"] = f"Bearer {HIRO_API_TOKEN}"
+
     try:
-        url = f"https://api.hiro.so/ordinals/v1/inscriptions?address={address}"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        j = r.json()
-        return [it.get("id") for it in j.get("results", []) if it.get("id")]
+        page_idx = 0
+        while True:
+            url = f"{base}?address={address}&limit={limit}&offset={offset}"
+            r = requests.get(url, headers=headers, timeout=20)
+            try:
+                r.raise_for_status()
+            except Exception as e:
+                print(f"[WL] Hiro fetch error (status={r.status_code}) for {url}: {e} body={r.text[:300]}")
+                break
+
+            j = r.json() or {}
+            results = j.get("results") or []
+            count = len(results)
+            page_idx += 1
+            print(f"[WL] Hiro page {page_idx}: got {count} inscriptions (offset={offset})")
+
+            for it in results:
+                _id = it.get("id")
+                if isinstance(_id, str):
+                    out.append(_id)
+
+            if count < limit:
+                break
+            offset += limit
+
+        print(f"[WL] Total inscriptions fetched for {address}: {len(out)}")
+        # Sample for logs
+        if out:
+            print(f"[WL] Sample ids: {out[:3]}")
+        return out
     except Exception as e:
         print(f"[WL] fetch_wallet_inscriptions error for {address}: {e}")
         return []
@@ -723,34 +759,35 @@ def check_wl_eligibility():
     if not address:
         return jsonify({"ok": False, "error": "Missing address"}), 400
     try:
-        wl_inscriptions = load_wl_inscriptions()
-        print(f"[WL] wl_inscriptions count: {len(wl_inscriptions)}")
+        wl_ids = load_wl_inscriptions()
+        print(f"[WL] WL list loaded: {len(wl_ids)} ids")
 
-        if not wl_inscriptions:
-            print("[WL] No WL inscriptions loaded. See diagnostics above.")
+        if not wl_ids:
+            print("[WL] WL empty. Ensure clean_inscriptions.json is found & parsed.")
             return jsonify({"ok": False, "error": "Failed to load whitelist inscriptions"}), 500
 
-        wallet_inscriptions = fetch_wallet_inscriptions(address)
-        print(f"[WL] Wallet {address} has {len(wallet_inscriptions)} inscriptions (first 5): {wallet_inscriptions[:5]}")
+        wallet_ids = fetch_wallet_inscriptions(address)
+        print(f"[WL] Wallet {address} holds {len(wallet_ids)} inscriptions")
 
-        valid_inscriptions, blacklisted = [], []
-        for ins in wallet_inscriptions:
-            if ins in wl_inscriptions:
+        # Partition wallet ids
+        valid, blacklisted = [], []
+        for ins in wallet_ids:
+            if ins in wl_ids:
                 if rz_sismember("blacklisted_inscriptions", ins) or rz_exists(f"temp_blacklist:{address}:{ins}"):
                     blacklisted.append(ins)
                 else:
-                    valid_inscriptions.append(ins)
+                    valid.append(ins)
 
-        print(f"[WL] Address {address}: valid={len(valid_inscriptions)}, blacklisted={len(blacklisted)}")
-        if blacklisted:
+        print(f"[WL] Address {address}: valid={len(valid)} blacklisted_or_locked={len(blacklisted)}")
+        if valid[:3]:
+            print(f"[WL]   valid sample: {valid[:3]}")
+        if blacklisted[:3]:
             print(f"[WL]   blacklisted sample: {blacklisted[:3]}")
-        if valid_inscriptions:
-            print(f"[WL]   valid sample: {valid_inscriptions[:3]}")
 
-        if not valid_inscriptions:
-            return jsonify({"ok": False, "error": "No valid whitelist inscriptions found"})
+        if not valid:
+            return jsonify({"ok": False, "eligible": False, "error": "No valid whitelist inscriptions found"})
 
-        return jsonify({"ok": True, "eligible": True, "inscriptions": valid_inscriptions})
+        return jsonify({"ok": True, "eligible": True, "inscriptions": valid})
     except Exception as e:
         print(f"[WL] Error in check_wl_eligibility for {address}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
