@@ -619,7 +619,7 @@ if RUN_SCHEDULER:
         scheduler = BackgroundScheduler(daemon=True)
 
         # ping scanner + rebuild every 10s (keeps counter live)
-        scheduler.add_job(ping_scanner_and_rebuild, 'interval', seconds=10, max_instances=1, coalesce=True)
+        scheduler.add_job(ping_scanner_and_rebuild, 'interval', seconds=15, max_instances=1, coalesce=True)
 
         # WL auto-finalizer (uses buyer:{address}:txs from scanner) every 10s
         scheduler.add_job(wl_finalize_from_scanner, 'interval', seconds=10, max_instances=1, coalesce=True)
