@@ -276,6 +276,64 @@ def fetch_wallet_inscriptions(address: str):
     except Exception as e:
         print(f"[WL] Hiro fetch error for {address}: {e}")
         return out
+        
+def wl_reconcile_by_counter():
+    """
+    Fallback: if WL reservation’s serial is already in used_serials, finalize anyway.
+    Prefer to find a txId; if not, still blacklist & clean.
+    """
+    for keys in scan_keys(match_pattern="wl_pending:*", count=200):
+        for key in keys:
+            try:
+                rid = key.split("wl_pending:", 1)[1]
+                info = rz_get_json(key)
+                info = json.loads(info) if isinstance(info, str) else (info or {})
+                address = (info.get("address") or "").strip()
+                serial  = (info.get("serial") or "").strip()
+                insc    = (info.get("inscriptionId") or "").strip()
+                if not (rid and serial and insc):
+                    continue
+
+                # Only act if counter says the serial is already used
+                if not is_serial_used(serial):
+                    continue
+
+                # Try to find a txId from buyer index or fallback scan (nice-to-have)
+                txid = None
+                try:
+                    txids = rz_get(f"/smembers/buyer:{address}:txs") or []
+                except Exception:
+                    txids = []
+                if not isinstance(txids, list):
+                    txids = []
+                for t in txids:
+                    row = rz_hgetall(f"tx:{t}") or {}
+                    if (row.get("serial") or "").strip() == serial:
+                        txid = t
+                        break
+
+                if txid:
+                    # Use the standard path so you still get metadata
+                    with app.test_request_context('/verify_and_store', method='POST', json={
+                        "txId": txid,
+                        "reservationId": rid,
+                        "inscriptionId": insc
+                    }):
+                        resp = verify_and_store()
+                        print(f"[WL reconcile] serial={serial} used & matched tx={txid} -> {resp.status_code}")
+                    rz_del(key)  # extra safe
+                else:
+                    # No tx found, but counter says used — finalize inline
+                    added = rz_sadd("blacklisted_inscriptions", insc)
+                    rz_del(f"wl_pending:{rid}")
+                    rz_del(f"resv:{rid}")
+                    rz_del(f"hold:{serial}")
+                    if address:
+                        rz_del(f"temp_blacklist:{address}:{insc}")
+                        rz_del(f"wl_lock:{address}")
+                    print(f"[WL reconcile] serial={serial} used; no tx. Blacklisted {insc} (SADD={added}), cleaned rid={rid}")
+            except Exception as e:
+                print(f"[WL reconcile] error on {key}: {e}")
 
 # ---------- rebuild counter from scanner ----------
 def rebuild_used_serials_core():
@@ -570,7 +628,8 @@ def verify_and_store():
 
         # WL blacklist deterministic
         if wl and chosen_inscription:
-            rz_sadd("blacklisted_inscriptions", chosen_inscription)
+            added = rz_sadd("blacklisted_inscriptions", chosen_inscription)
+            print(f"[VS] WL blacklisted {chosen_inscription} (SADD={added}) for tx {txId}")
             if address:
                 rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
 
@@ -579,8 +638,13 @@ def verify_and_store():
             "serial": serial,
             "wl": "1" if wl else "0"
         })
-        return jsonify({"ok": True, "txId": txId, "serial": serial, "wl": wl,
-                        "blacklistedInscription": chosen_inscription if wl else None})
+        return jsonify({
+            "ok": True,
+            "txId": txId,
+            "serial": serial,
+            "wl": wl,
+            "blacklistedInscription": chosen_inscription if wl else None
+        })
     except Exception as e:
         print(f"[VS] verify_and_store error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -623,6 +687,9 @@ if RUN_SCHEDULER:
 
         # WL auto-finalizer (uses buyer:{address}:txs from scanner) every 10s
         scheduler.add_job(wl_finalize_from_scanner, 'interval', seconds=10, max_instances=1, coalesce=True)
+        
+        scheduler.add_job(wl_reconcile_by_counter, 'interval', seconds=10, max_instances=1, coalesce=True)
+
 
         scheduler.start()
         print("[scheduler] started: scan+rebuild+wl-finalizer every 10s")
