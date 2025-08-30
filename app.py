@@ -429,25 +429,20 @@ def reservation_status():
     if not rid:
         return jsonify({"ok": False, "error": "Missing reservationId"}), 400
 
-    resv = rz_get_json(f"/get/resv:{rid}")
-    if not resv:
+    # Pass the raw key, NOT "/get/<key>"
+    resv_data = rz_get_json(f"resv:{rid}")
+    if not resv_data:
         return jsonify({"ok": True, "active": False})
 
-    serial = None
-    wl = False
     try:
-        # Support both old (raw serial string) and new JSON payload
-        if isinstance(resv, str):
-            serial = resv
-        else:
-            obj = json.loads(resv) if isinstance(resv, str) else resv
-            serial = obj.get("serial")
-            wl = bool(obj.get("wl", False))
+        resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
+        serial = resv.get("serial")
+        wl = bool(resv.get("wl", False))
     except Exception:
-        serial = str(resv)
+        return jsonify({"ok": True, "active": False})
 
-    used = is_serial_used(serial) if serial else False
-    ttl = rz_ttl(f"hold:{serial}") if serial else -2
+    used = is_serial_used(serial)
+    ttl = rz_ttl(f"hold:{serial}")
     return jsonify({"ok": True, "active": True, "serial": serial, "used": used, "ttl": ttl, "wl": wl})
 
 @app.route('/file/<path:fname>')
