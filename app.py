@@ -7,9 +7,10 @@ import logging
 
 # Suppress HTTP logs
 logging.getLogger('werkzeug').disabled = True
-app.logger.disabled = True
+
 
 app = Flask(__name__)
+app.logger.disabled = True
 
 # ========= TEST CONFIG (move to env in prod) =========
 APP_FEE_ADDRESS = os.getenv("APP_FEE_ADDRESS", "bc1p7w28we62hv7vnvm4jcqrn6e8y5y6qfvvuaq8at0jpj8jyq5lymusp5jsvq")
