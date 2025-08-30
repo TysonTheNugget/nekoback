@@ -336,9 +336,12 @@ def try_hold_serial(serial: str, holder_id: str, ttl=900) -> bool:
     payload = json.dumps({"holder": holder_id, "ts": int(time.time()), "exp": int(time.time()) + ttl})
     return rz_setex_nx(f"hold:{serial}", payload, ttl)
 
-def create_reservation_id(serial: str, ttl=900, wl=False) -> str:
+def create_reservation_id(serial: str, ttl=900, wl=False, inscription_id: str=None) -> str:
     rid = str(uuid.uuid4())
-    rz_setex(f"resv:{rid}", json.dumps({"serial": serial, "wl": wl}), ttl)
+    payload = {"serial": serial, "wl": wl}
+    if inscription_id:
+        payload["inscriptionId"] = inscription_id
+    rz_setex(f"resv:{rid}", json.dumps(payload), ttl)
     return rid
 
 def pick_available_filename(preferred_fname=None, max_attempts=100):
@@ -362,65 +365,86 @@ def pick_available_filename(preferred_fname=None, max_attempts=100):
     raise RuntimeError("No available images to reserve")
 
 # ---------- Whitelist helpers ----------
-def load_wl_inscriptions():
-    json_path = os.path.join(SINGLES_DIR, 'clean_inscriptions.json')
-    try:
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            raise ValueError("clean_inscriptions.json must contain a list of inscription objects")
-        inscription_ids = [item["id"] for item in data if isinstance(item, dict) and "id" in item]
-        print(f"[WL] Loaded {len(inscription_ids)} inscriptions from clean_inscriptions.json: {inscription_ids[:5]}...")
-        return inscription_ids
-    except Exception as e:
-        print(f"[WL] Error loading clean_inscriptions.json: {e}")
-        return []
-
-def fetch_wallet_inscriptions(address: str):
-    limit = 60
-    offset = 0
-    all_inscriptions = []
-    while True:
+def poll_wl_mint(reservation_id, filename, address, inscription_id):
+    serial = extract_serial_from_filename(filename)
+    print(f"[WL] Starting background polling for reservation {reservation_id}, serial {serial}, address {address}, inscription {inscription_id}")
+    attempts = 0
+    max_attempts = 90 # 900 seconds / 10 seconds
+    while attempts < max_attempts:
         try:
-            response = requests.get(
-                f"https://api.hiro.so/ordinals/v1/inscriptions?address={urllib.parse.quote(address)}&limit={limit}&offset={offset}",
-                headers={
-                    'Accept': 'application/json',
-                    'Authorization': f'Bearer {HIRO_API_TOKEN}'
-                },
-                timeout=15
-            )
-            response.raise_for_status()
-            data = response.json()
-            inscriptions = data.get("results", [])
-            print(f"[WL] Fetched {len(inscriptions)} inscriptions for {address} at offset {offset}: {[ins['id'] for ins in inscriptions][:5]}...")
-            if not inscriptions:
-                break
-            all_inscriptions.extend([ins["id"] for ins in inscriptions])
-            offset += limit
+            # Fetch unconfirmed + recent confirmed txs from user's wallet
+            mempool_txs = fetch_mempool_txs(address)
+            chain_txs = fetch_chain_txs(address, pages=2) # Last 50 txs or so
+            all_txs = mempool_txs + chain_txs
+            print(f"[WL] Fetched {len(all_txs)} txs from wallet {address} (attempt {attempts + 1})")
+            for tx in all_txs:
+                txid = tx.get('txid')
+                if not txid:
+                    continue
+                # Check if this tx pays the WL fee (using Mempool)
+                if not tx_pays_app_fee(txid, wl=True):
+                    continue
+                # Get outspends to find reveal txids
+                outspends = fetch_outspends(txid)
+                candidates = []
+                for spend in outspends:
+                    if spend.get('spent'):
+                        reveal_txid = spend.get('txid')
+                        if reveal_txid:
+                            candidates.append(reveal_txid)
+                uniq_candidates = list(set(candidates))
+                for rtxid in uniq_candidates:
+                    ins_id = find_png_inscription_id(rtxid)
+                    if not ins_id:
+                        continue
+                    buf = fetch_inscription_content(ins_id)
+                    if not buf:
+                        continue
+                    parsed = parse_png_text(buf)
+                    if not parsed['ok']:
+                        continue
+                    text = parsed['text']
+                    # Extract serial (like scan.js)
+                    extracted_serial = (
+                        text.get(PNG_TEXT_KEY_HINT or 'Serial') or
+                        get_case_insensitive(text, 'serial') or
+                        maybe_serial_from_json_values(text) or
+                        (text.get('name') if re.match(r'^[A-Za-z0-9]{10,24}$', str(text.get('name', ''))) else None) or
+                        find_alnum_token('\n'.join(f"{k}={v}" for k, v in text.items()))
+                    )
+                    if extracted_serial == serial:
+                        print(f"[WL] Found matching serial {serial} in tx {txid} for reservation {reservation_id}")
+                        # Call verify_and_store with updated data
+                        data = {
+                            "txId": txid,
+                            "reservationId": reservation_id,
+                            "address": address,
+                            "inscriptionId": inscription_id
+                        }
+                        with app.test_request_context('/verify_and_store', method='POST', json=data):
+                            response = verify_and_store()
+                            print(f"[WL] verify_and_store response for tx {txid}: {response.get_json()}")
+                        rz_del(f"wl_poll:{reservation_id}")
+                        return # Done
         except Exception as e:
-            print(f"[WL] Error fetching inscriptions for {address}: {e}")
-            return all_inscriptions
-    print(f"[WL] Total inscriptions for {address}: {len(all_inscriptions)} inscriptions")
-    return all_inscriptions
-
-# ---------- core rebuild logic ----------
-def rebuild_used_serials_core():
-    added = 0
-    total = 0
-    for keys in scan_keys(match_pattern="tx:*", count=1000):
-        if not keys:
-            continue
-        for k in keys:
-            total += 1
-            row = rz_hgetall(k)
-            if not isinstance(row, dict):
-                continue
-            serial = row.get("serial")
-            if serial:
-                rz_sadd("used_serials", serial)
-                added += 1
-    return {"scanned_tx_keys": total, "added_to_used_serials": added}
+            print(f"[WL] Error in poll_wl_mint for {reservation_id} (attempt {attempts + 1}): {e}")
+        attempts += 1
+        time.sleep(10)
+    # Timeout cleanup (unchanged)
+    print(f"[WL] Polling timed out for reservation {reservation_id}, serial {serial}")
+    resv_data = rz_get_json(f"resv:{reservation_id}")
+    if resv_data:
+        try:
+            resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
+            serial = resv.get("serial")
+            rz_del(f"resv:{reservation_id}")
+            rz_del(f"hold:{serial}")
+            rz_del(f"temp_blacklist:{address}:{inscription_id}")
+            rz_del(f"wl_lock:{address}")
+            rz_del(f"wl_poll:{reservation_id}")
+            print(f"[WL] Cancelled reservation {reservation_id} for serial {serial} due to polling timeout")
+        except Exception as e:
+            print(f"[WL] Error cleaning up timed out reservation {reservation_id}: {e}")
 
 
 # Replace the existing poll_wl_mint function with this
@@ -741,7 +765,7 @@ def claim_wl():
                 raise RuntimeError("Could not reserve any image")
                 
         # Create WL reservation
-        rid = create_reservation_id(serial, ttl=900, wl=True)
+        rid = create_reservation_id(serial, ttl=900, wl=True, inscription_id=inscription_id)
         
         # Schedule background polling
         rz_setex(f"wl_poll:{rid}", json.dumps({
@@ -779,27 +803,30 @@ def verify_and_store():
     txId = data.get('txId')
     reservationId = data.get('reservationId')
     address = data.get('address')
+    body_inscription = data.get('inscriptionId')
     if not txId or not reservationId or not address:
         print(f"[WL] Missing data in verify_and_store: txId={txId}, reservationId={reservationId}, address={address}")
         return jsonify({"ok": False, "error": "Missing txId, reservationId, or address"}), 400
-    
+   
     resv_data = rz_get_json(f"resv:{reservationId}")
     if not resv_data:
         print(f"[WL] Invalid or expired reservation {reservationId}")
         return jsonify({"ok": False, "error": "Invalid or expired reservation"}), 400
-    
+   
     try:
         resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
         serial = resv.get("serial")
         wl = resv.get("wl", False)
+        resv_inscription = resv.get("inscriptionId")
+        chosen_inscription = body_inscription or resv_inscription
     except Exception as e:
         print(f"[WL] Invalid reservation data for {reservationId}: {e}")
         return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
-        
+       
     if not tx_pays_app_fee(txId, wl=wl):
         print(f"[WL] Insufficient fee for tx {txId} (WL: {wl})")
         return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
-        
+       
     try:
         rz_sadd("used_serials", serial)
         rz_del(f"hold:{serial}")
@@ -807,25 +834,33 @@ def verify_and_store():
         rz_del(f"wl_lock:{address}")
         blacklisted_inscription = None
         if wl:
-            wl_inscriptions = load_wl_inscriptions()
-            print(f"[WL] Loaded {len(wl_inscriptions)} WL inscriptions for tx {txId}")
-            wallet_inscriptions = fetch_wallet_inscriptions(address)
-            print(f"[WL] Fetched {len(wallet_inscriptions)} wallet inscriptions for {address} in tx {txId}")
-            valid_inscriptions = [ins for ins in wallet_inscriptions if ins in wl_inscriptions and not rz_sismember("blacklisted_inscriptions", ins)]
-            print(f"[WL] Found {len(valid_inscriptions)} valid inscriptions for tx {txId}: {valid_inscriptions[:5]}...")
-            if valid_inscriptions:
-                blacklisted_inscription = valid_inscriptions[0]
-                rz_sadd("blacklisted_inscriptions", blacklisted_inscription)
-                rz_del(f"temp_blacklist:{address}:{blacklisted_inscription}")
-                print(f"[WL] Blacklisted inscription {blacklisted_inscription} after verified mint for tx {txId}")
-        
+            if chosen_inscription:
+                # deterministic path
+                rz_sadd("blacklisted_inscriptions", chosen_inscription)
+                rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
+                blacklisted_inscription = chosen_inscription
+                print(f"[WL] Blacklisted exact reservation inscription {chosen_inscription} for tx {txId}")
+            else:
+                # fallback path (old behavior) in case older reservations lacked inscriptionId
+                wl_inscriptions = load_wl_inscriptions()
+                print(f"[WL] Loaded {len(wl_inscriptions)} WL inscriptions for tx {txId}")
+                wallet_inscriptions = fetch_wallet_inscriptions(address)
+                print(f"[WL] Fetched {len(wallet_inscriptions)} wallet inscriptions for {address} in tx {txId}")
+                valid_inscriptions = [ins for ins in wallet_inscriptions if ins in wl_inscriptions and not rz_sismember("blacklisted_inscriptions", ins)]
+                print(f"[WL] Found {len(valid_inscriptions)} valid inscriptions for tx {txId}: {valid_inscriptions[:5]}...")
+                if valid_inscriptions:
+                    blacklisted_inscription = valid_inscriptions[0]
+                    rz_sadd("blacklisted_inscriptions", blacklisted_inscription)
+                    rz_del(f"temp_blacklist:{address}:{blacklisted_inscription}")
+                    print(f"[WL] Blacklisted fallback inscription {blacklisted_inscription} for tx {txId}")
+       
         rz_hset_many(f"tx:{txId}", {
             "serial": serial,
             "pngText": json.dumps({"Serial": serial}),
             "wl": "1" if wl else "0"
         })
         print(f"[WL] Verified and stored tx {txId} for serial {serial} (WL: {wl})")
-        
+       
         return jsonify({
             "ok": True,
             "txId": txId,
