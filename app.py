@@ -546,11 +546,13 @@ def try_hold_serial(serial: str, holder_id: str, ttl=900) -> bool:
     payload = json.dumps({"holder": holder_id, "ts": int(time.time()), "exp": int(time.time()) + ttl})
     return rz_setex_nx(f"hold:{serial}", payload, ttl)
 
-def create_reservation_id(serial: str, ttl=900, wl=False, inscription_id: str=None) -> str:
+def create_reservation_id(serial: str, ttl=900, wl=False, inscription_id: str=None, address: str=None) -> str:
     rid = str(uuid.uuid4())
     payload = {"serial": serial, "wl": wl}
     if inscription_id:
         payload["inscriptionId"] = inscription_id
+    if address:
+        payload["address"] = address          # <-- store it
     rz_setex(f"resv:{rid}", json.dumps(payload), ttl)
     return rid
 
@@ -582,6 +584,14 @@ def poll_wl_mint(reservation_id, filename, address, inscription_id):
     max_attempts = 90 # 900 seconds / 10 seconds
     while attempts < max_attempts:
         try:
+            # Reset reservation TTL to 20 minutes
+            try:
+                resv_json = rz_get_json(f"resv:{reservation_id}")
+                if resv_json:
+                    payload = json.dumps(resv_json) if isinstance(resv_json, dict) else resv_json
+                    rz_setex(f"resv:{reservation_id}", payload, 1200) # reset TTL to 20m
+            except Exception as _:
+                pass
             # Fetch unconfirmed + recent confirmed txs from user's wallet
             mempool_txs = fetch_mempool_txs(address)
             chain_txs = fetch_chain_txs(address, pages=2) # Last 50 txs or so
@@ -923,17 +933,14 @@ def verify_and_store():
     data = request.get_json(force=True)
     txId = data.get('txId')
     reservationId = data.get('reservationId')
-    address = data.get('address')
-    body_inscription = data.get('inscriptionId')  # optional; preferred if present
+    body_inscription = data.get('inscriptionId')
 
-    if not txId or not reservationId or not address:
-        print(f"[WL] Missing data in verify_and_store: txId={txId}, reservationId={reservationId}, address={address}")
-        return jsonify({"ok": False, "error": "Missing txId, reservationId, or address"}), 400
+    if not txId or not reservationId:
+        return jsonify({"ok": False, "error": "Missing txId or reservationId"}), 400
 
-    # Load reservation
     resv_data = rz_get_json(f"resv:{reservationId}")
     if not resv_data:
-        print(f"[WL] Invalid or expired reservation {reservationId}")
+        print(f"[VS] Invalid/expired reservation {reservationId}")
         return jsonify({"ok": False, "error": "Invalid or expired reservation"}), 400
 
     try:
@@ -941,70 +948,60 @@ def verify_and_store():
         serial = resv.get("serial")
         wl = bool(resv.get("wl", False))
         resv_inscription = resv.get("inscriptionId")
-        chosen_inscription = body_inscription or resv_inscription  # deterministic if present
+        chosen_inscription = body_inscription or resv_inscription
+        address = data.get('address') or resv.get('address')    # <-- pull from reservation if missing
     except Exception as e:
-        print(f"[WL] Invalid reservation data for {reservationId}: {e}")
+        print(f"[VS] Bad reservation data for {reservationId}: {e}")
         return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
 
-    # Verify app fee according to WL/regular flow
+    if wl and not address:
+        print(f"[VS] WL verify missing address; resv has none. tx={txId} resv={reservationId}")
+        return jsonify({"ok": False, "error": "Missing address for WL verify"}), 400
+
     if not tx_pays_app_fee(txId, wl=wl):
-        print(f"[WL] Insufficient fee for tx {txId} (WL={wl})")
+        print(f"[VS] App fee check failed for tx={txId} (WL={wl})")
         return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
 
     try:
-        # Mark serial used and clear holds/locks
         rz_sadd("used_serials", serial)
         rz_del(f"hold:{serial}")
         rz_del(f"resv:{reservationId}")
         if wl:
-            rz_del(f"wl_lock:{address}")  # clear WL address lock if any
+            rz_del(f"wl_lock:{address}")
 
         blacklisted_inscription = None
-
         if wl:
             if chosen_inscription:
-                # Deterministic path: blacklist exactly what we reserved/passed
                 rz_sadd("blacklisted_inscriptions", chosen_inscription)
                 rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
                 blacklisted_inscription = chosen_inscription
-                print(f"[WL] Blacklisted exact reservation inscription {chosen_inscription} for tx {txId}")
+                print(f"[VS] WL blacklisted (deterministic) {chosen_inscription} for tx {txId}")
             else:
-                # Fallback ONLY for legacy reservations without inscriptionId (can be removed if not needed)
-                wl_inscriptions = load_wl_inscriptions()  # must exist in your app
-                print(f"[WL] Loaded {len(wl_inscriptions)} WL inscriptions for tx {txId}")
-                wallet_inscriptions = fetch_wallet_inscriptions(address)  # must exist in your app
-                print(f"[WL] Fetched {len(wallet_inscriptions)} wallet inscriptions for {address} in tx {txId}")
+                wl_inscriptions = load_wl_inscriptions()
+                wallet_inscriptions = fetch_wallet_inscriptions(address)
                 valid_inscriptions = [
                     ins for ins in wallet_inscriptions
                     if ins in wl_inscriptions and not rz_sismember("blacklisted_inscriptions", ins)
                 ]
-                print(f"[WL] Found {len(valid_inscriptions)} valid inscriptions for tx {txId}: {valid_inscriptions[:5]}...")
                 if valid_inscriptions:
                     blacklisted_inscription = valid_inscriptions[0]
                     rz_sadd("blacklisted_inscriptions", blacklisted_inscription)
                     rz_del(f"temp_blacklist:{address}:{blacklisted_inscription}")
-                    print(f"[WL] Blacklisted fallback inscription {blacklisted_inscription} for tx {txId}")
+                    print(f"[VS] WL blacklisted (fallback) {blacklisted_inscription} for tx {txId}")
                 else:
-                    print(f"[WL] No candidate WL inscription found in fallback for {address}")
+                    print(f"[VS] WL fallback found no candidate for addr={address}")
 
-        # Record tx metadata
         rz_hset_many(f"tx:{txId}", {
             "serial": serial,
             "pngText": json.dumps({"Serial": serial}),
             "wl": "1" if wl else "0"
         })
-        print(f"[WL] Verified and stored tx {txId} for serial {serial} (WL={wl})")
-
-        return jsonify({
-            "ok": True,
-            "txId": txId,
-            "serial": serial,
-            "wl": wl,
-            "blacklistedInscription": blacklisted_inscription
-        })
+        print(f"[VS] Verified tx {txId} serial {serial} (WL={wl}). used_serials={rz_scard('used_serials')}")
+        return jsonify({"ok": True, "txId": txId, "serial": serial, "wl": wl, "blacklistedInscription": blacklisted_inscription})
     except Exception as e:
-        print(f"[WL] Error in verify_and_store for {txId}: {e}")
+        print(f"[VS] Error in verify_and_store for {txId}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.route('/admin/wl_debug', methods=['POST'])
 def wl_debug():
