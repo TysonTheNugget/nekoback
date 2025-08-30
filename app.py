@@ -32,6 +32,43 @@ CONTENT_BASE = "https://api.hiro.so/ordinals/v1/inscriptions"
 PNG_SIG = b'\x89PNG\r\n\x1a\n'
 WL_INSCRIPTIONS_CACHE = None
 WL_INSCRIPTIONS_MTIME = 0
+PNG_TEXT_KEY_HINT = None
+
+
+def load_wl_inscriptions() -> set:
+    """Load WL inscription IDs from clean_inscriptions.json (cached)."""
+    import os, json, time
+    global WL_INSCRIPTIONS_CACHE, WL_INSCRIPTIONS_MTIME
+    # You can override the path via env: WL_INSCRIPTIONS_PATH
+    path = os.getenv("WL_INSCRIPTIONS_PATH", os.path.join(app.root_path, "clean_inscriptions.json"))
+    try:
+        mtime = os.path.getmtime(path)
+        if WL_INSCRIPTIONS_CACHE is None or mtime != WL_INSCRIPTIONS_MTIME:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Accept either a bare list or {"inscriptions": [...]}
+            if isinstance(data, list):
+                WL_INSCRIPTIONS_CACHE = set(data)
+            else:
+                WL_INSCRIPTIONS_CACHE = set(data.get("inscriptions", []))
+            WL_INSCRIPTIONS_MTIME = mtime
+            print(f"[WL] Loaded {len(WL_INSCRIPTIONS_CACHE)} inscriptions from {path}")
+        return WL_INSCRIPTIONS_CACHE
+    except Exception as e:
+        print(f"[WL] Failed to load WL inscriptions from {path}: {e}")
+        return set()
+        
+def fetch_wallet_inscriptions(address: str) -> list:
+    """Best-effort wallet inscriptions fetch (fallback only)."""
+    try:
+        url = f"https://api.hiro.so/ordinals/v1/inscriptions?address={address}"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        j = r.json()
+        return [it.get("id") for it in j.get("results", []) if it.get("id")]
+    except Exception as e:
+        print(f"[WL] fetch_wallet_inscriptions error for {address}: {e}")
+        return []
 
 def get_case_insensitive(text_map: dict, key: str):
     for k in text_map:
@@ -242,6 +279,15 @@ def rz_get_json(key):
         return json.loads(val)
     except:
         return val
+        
+def _read_public_mint_start_ts() -> int:
+    return int(PUBLIC_MINT_START_TS)
+
+def public_mint_seconds_until_open() -> int:
+    try:
+        return max(0, int(PUBLIC_MINT_START_TS) - int(time.time()))
+    except Exception:
+        return 0
 
 def scan_keys(match_pattern="tx:*", count=1000):
     cursor = "0"
@@ -448,97 +494,6 @@ def poll_wl_mint(reservation_id, filename, address, inscription_id):
         except Exception as e:
             print(f"[WL] Error cleaning up timed out reservation {reservation_id}: {e}")
 
-
-# Replace the existing poll_wl_mint function with this
-def poll_wl_mint(reservation_id, filename, address, inscription_id):
-    serial = extract_serial_from_filename(filename)
-    print(f"[WL] Starting background polling for reservation {reservation_id}, serial {serial}, address {address}, inscription {inscription_id}")
-    attempts = 0
-    max_attempts = 90  # 900 seconds / 10 seconds
-    while attempts < max_attempts:
-        try:
-            # Fetch unconfirmed + recent confirmed txs from user's wallet
-            mempool_txs = fetch_mempool_txs(address)
-            chain_txs = fetch_chain_txs(address, pages=2)  # Last 50 txs or so
-            all_txs = mempool_txs + chain_txs
-            print(f"[WL] Fetched {len(all_txs)} txs from wallet {address} (attempt {attempts + 1})")
-
-            for tx in all_txs:
-                txid = tx.get('txid')
-                if not txid:
-                    continue
-
-                # Check if this tx pays the WL fee (using Mempool)
-                if not tx_pays_app_fee(txid, wl=True):
-                    continue
-
-                # Get outspends to find reveal txids
-                outspends = fetch_outspends(txid)
-                candidates = []
-                for spend in outspends:
-                    if spend.get('spent'):
-                        reveal_txid = spend.get('txid')
-                        if reveal_txid:
-                            candidates.append(reveal_txid)
-
-                uniq_candidates = list(set(candidates))
-                for rtxid in uniq_candidates:
-                    ins_id = find_png_inscription_id(rtxid)
-                    if not ins_id:
-                        continue
-
-                    buf = fetch_inscription_content(ins_id)
-                    if not buf:
-                        continue
-
-                    parsed = parse_png_text(buf)
-                    if not parsed['ok']:
-                        continue
-
-                    text = parsed['text']
-                    # Extract serial (like scan.js)
-                    extracted_serial = (
-                        text.get(PNG_TEXT_KEY_HINT or 'Serial') or
-                        get_case_insensitive(text, 'serial') or
-                        maybe_serial_from_json_values(text) or
-                        (text.get('name') if re.match(r'^[A-Za-z0-9]{10,24}$', str(text.get('name', ''))) else None) or
-                        find_alnum_token('\n'.join(f"{k}={v}" for k, v in text.items()))
-                    )
-
-                    if extracted_serial == serial:
-                        print(f"[WL] Found matching serial {serial} in tx {txid} for reservation {reservation_id}")
-                        # Call verify_and_store
-                        data = {
-                            "txId": txid,
-                            "reservationId": reservation_id,
-                            "address": address
-                        }
-                        with app.test_request_context('/verify_and_store', method='POST', json=data):
-                            response = verify_and_store()
-                            print(f"[WL] verify_and_store response for tx {txid}: {response.get_json()}")
-                        rz_del(f"wl_poll:{reservation_id}")
-                        return  # Done
-
-        except Exception as e:
-            print(f"[WL] Error in poll_wl_mint for {reservation_id} (attempt {attempts + 1}): {e}")
-        attempts += 1
-        time.sleep(10)
-
-    # Timeout cleanup (unchanged)
-    print(f"[WL] Polling timed out for reservation {reservation_id}, serial {serial}")
-    resv_data = rz_get_json(f"resv:{reservation_id}")
-    if resv_data:
-        try:
-            resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
-            serial = resv.get("serial")
-            rz_del(f"resv:{reservation_id}")
-            rz_del(f"hold:{serial}")
-            rz_del(f"temp_blacklist:{address}:{inscription_id}")
-            rz_del(f"wl_lock:{address}")
-            rz_del(f"wl_poll:{reservation_id}")
-            print(f"[WL] Cancelled reservation {reservation_id} for serial {serial} due to polling timeout")
-        except Exception as e:
-            print(f"[WL] Error cleaning up timed out reservation {reservation_id}: {e}")
             
 # ---------- routes ----------
 @app.route('/')
@@ -805,64 +760,77 @@ def verify_and_store():
     txId = data.get('txId')
     reservationId = data.get('reservationId')
     address = data.get('address')
-    body_inscription = data.get('inscriptionId')
+    body_inscription = data.get('inscriptionId')  # optional; preferred if present
+
     if not txId or not reservationId or not address:
         print(f"[WL] Missing data in verify_and_store: txId={txId}, reservationId={reservationId}, address={address}")
         return jsonify({"ok": False, "error": "Missing txId, reservationId, or address"}), 400
-   
+
+    # Load reservation
     resv_data = rz_get_json(f"resv:{reservationId}")
     if not resv_data:
         print(f"[WL] Invalid or expired reservation {reservationId}")
         return jsonify({"ok": False, "error": "Invalid or expired reservation"}), 400
-   
+
     try:
         resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
         serial = resv.get("serial")
-        wl = resv.get("wl", False)
+        wl = bool(resv.get("wl", False))
         resv_inscription = resv.get("inscriptionId")
-        chosen_inscription = body_inscription or resv_inscription
+        chosen_inscription = body_inscription or resv_inscription  # deterministic if present
     except Exception as e:
         print(f"[WL] Invalid reservation data for {reservationId}: {e}")
         return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
-       
+
+    # Verify app fee according to WL/regular flow
     if not tx_pays_app_fee(txId, wl=wl):
-        print(f"[WL] Insufficient fee for tx {txId} (WL: {wl})")
+        print(f"[WL] Insufficient fee for tx {txId} (WL={wl})")
         return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
-       
+
     try:
+        # Mark serial used and clear holds/locks
         rz_sadd("used_serials", serial)
         rz_del(f"hold:{serial}")
         rz_del(f"resv:{reservationId}")
-        rz_del(f"wl_lock:{address}")
+        if wl:
+            rz_del(f"wl_lock:{address}")  # clear WL address lock if any
+
         blacklisted_inscription = None
+
         if wl:
             if chosen_inscription:
-                # deterministic path
+                # Deterministic path: blacklist exactly what we reserved/passed
                 rz_sadd("blacklisted_inscriptions", chosen_inscription)
                 rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
                 blacklisted_inscription = chosen_inscription
                 print(f"[WL] Blacklisted exact reservation inscription {chosen_inscription} for tx {txId}")
             else:
-                # fallback path (old behavior) in case older reservations lacked inscriptionId
-                wl_inscriptions = load_wl_inscriptions()
+                # Fallback ONLY for legacy reservations without inscriptionId (can be removed if not needed)
+                wl_inscriptions = load_wl_inscriptions()  # must exist in your app
                 print(f"[WL] Loaded {len(wl_inscriptions)} WL inscriptions for tx {txId}")
-                wallet_inscriptions = fetch_wallet_inscriptions(address)
+                wallet_inscriptions = fetch_wallet_inscriptions(address)  # must exist in your app
                 print(f"[WL] Fetched {len(wallet_inscriptions)} wallet inscriptions for {address} in tx {txId}")
-                valid_inscriptions = [ins for ins in wallet_inscriptions if ins in wl_inscriptions and not rz_sismember("blacklisted_inscriptions", ins)]
+                valid_inscriptions = [
+                    ins for ins in wallet_inscriptions
+                    if ins in wl_inscriptions and not rz_sismember("blacklisted_inscriptions", ins)
+                ]
                 print(f"[WL] Found {len(valid_inscriptions)} valid inscriptions for tx {txId}: {valid_inscriptions[:5]}...")
                 if valid_inscriptions:
                     blacklisted_inscription = valid_inscriptions[0]
                     rz_sadd("blacklisted_inscriptions", blacklisted_inscription)
                     rz_del(f"temp_blacklist:{address}:{blacklisted_inscription}")
                     print(f"[WL] Blacklisted fallback inscription {blacklisted_inscription} for tx {txId}")
-       
+                else:
+                    print(f"[WL] No candidate WL inscription found in fallback for {address}")
+
+        # Record tx metadata
         rz_hset_many(f"tx:{txId}", {
             "serial": serial,
             "pngText": json.dumps({"Serial": serial}),
             "wl": "1" if wl else "0"
         })
-        print(f"[WL] Verified and stored tx {txId} for serial {serial} (WL: {wl})")
-       
+        print(f"[WL] Verified and stored tx {txId} for serial {serial} (WL={wl})")
+
         return jsonify({
             "ok": True,
             "txId": txId,
@@ -952,34 +920,49 @@ scheduler = None
 if RUN_SCHEDULER:
     try:
         scheduler = BackgroundScheduler(daemon=True, timezone="UTC")
-        # Test Redis connectivity
+
+        # Test Redis connectivity (use a harmless call instead of /ping)
         try:
-            rz_get("/ping")
+            _ = rz_scard("used_serials")  # will return 0 if empty; proves connectivity
             print("[WL] Redis connection successful")
         except Exception as e:
             print(f"[WL] Redis connection failed: {e}")
-            raise Exception("Cannot start scheduler without Redis connection")
+            raise Exception("Cannot start scheduler without Redis connection") from e
+
         # Resume pending WL polls from Redis
         try:
-            for keys in scan_keys(match_pattern="wl_poll:*", count=100):
+            resumed = 0
+            for keys in scan_keys(match_pattern="wl_poll:*", count=200):
                 for key in keys:
                     try:
                         poll_data = rz_get_json(key)
-                        if poll_data:
-                            data = json.loads(poll_data) if isinstance(poll_data, str) else poll_data
-                            rid = key.replace("wl_poll:", "")
-                            scheduler.add_job(
-                                poll_wl_mint,
-                                args=[rid, data["filename"], data["address"], data["inscriptionId"]],
-                                id=f"poll_wl_{rid}",
-                                max_instances=1,
-                                replace_existing=True
-                            )
-                            print(f"[WL] Resumed polling for reservation {rid}, filename {data['filename']}, address {data['address']}")
+                        data = json.loads(poll_data) if isinstance(poll_data, str) else (poll_data or {})
+                        rid = key.split("wl_poll:", 1)[1] if key.startswith("wl_poll:") else None
+                        fname = data.get("filename")
+                        addr = data.get("address")
+                        insc = data.get("inscriptionId")
+
+                        if not (rid and fname and addr and insc):
+                            print(f"[WL] Skipping resume for {key} (missing fields)")
+                            continue
+
+                        # Ensure we pass inscriptionId into the poller (deterministic blacklist later)
+                        scheduler.add_job(
+                            poll_wl_mint,
+                            args=[rid, fname, addr, insc],
+                            id=f"poll_wl_{rid}",
+                            max_instances=1,
+                            replace_existing=True,
+                            coalesce=True,
+                            misfire_grace_time=60
+                        )
+                        resumed += 1
+                        print(f"[WL] Resumed polling for reservation {rid}, filename {fname}, address {addr}")
                     except Exception as e:
                         print(f"[WL] Error resuming poll for {key}: {e}")
-            print(f"[WL] Scheduler started with {scheduler.get_jobs().__len__()} jobs")
+
             scheduler.start()
+            print(f"[WL] Scheduler started (resumed {resumed} WL polls, total jobs: {len(scheduler.get_jobs())})")
         except Exception as e:
             print(f"[WL] Error starting scheduler: {e}")
             raise
