@@ -616,7 +616,7 @@ def claim_wl():
         rid = create_reservation_id(serial, ttl=1200, wl=True, inscription_id=inscription_id, address=address)
         rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 1200)
         # temp lock the exact inscription so it can't be reused while minting
-        rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 1200)
+        rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 60)
         print(f"[WL] Reserved {fname} (serial {serial}) for {address} WL rid={rid}")
         return jsonify({
             "ok": True,"filename": fname,"serial": serial,"reservationId": rid,
