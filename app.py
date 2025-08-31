@@ -2,6 +2,8 @@ from flask import Flask, render_template, jsonify, request, send_file
 import os, random, time, hmac, hashlib, json, re, uuid, urllib.parse
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
