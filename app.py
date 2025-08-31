@@ -399,9 +399,13 @@ def _parse_iso_utc(s: str) -> int:
     hh, mm, ss = map(int, s[11:19].split(":"))
     return int(time.mktime((y, m, d, hh, mm, ss, 0, 0, 0))) - time.timezone  # convert to UTC
     
-def wl_finalize_from_scanner():
+def wl_finalize_from_scanner(max_items: int = 60):
+    processed = 0
     for keys in scan_keys(match_pattern="wl_pending:*", count=200):
         for key in keys:
+            if processed >= max_items:
+                return
+            processed += 1
             try:
                 rid = key.split("wl_pending:", 1)[1]
                 info = rz_get_json(key)
@@ -412,7 +416,7 @@ def wl_finalize_from_scanner():
                 if not (rid and address and serial):
                     continue
 
-                # Fast path: use scanner’s buyer index
+                # Fast path: buyer index
                 try:
                     txids = rz_get(f"/smembers/buyer:{address}:txs") or []
                 except Exception:
@@ -420,13 +424,19 @@ def wl_finalize_from_scanner():
                 if not isinstance(txids, list):
                     txids = []
 
-                # Fallback: scan tx:* by buyerAddr
+                # SMALL fallback: only look at a limited slice of tx:* (prevents long runs)
                 if not txids:
-                    for tkeys in scan_keys(match_pattern="tx:*", count=500):
+                    looked = 0
+                    for tkeys in scan_keys(match_pattern="tx:*", count=200):
                         for tkey in tkeys:
                             row = rz_hgetall(tkey) or {}
                             if (row.get("buyerAddr") or "") == address:
                                 txids.append(tkey.replace("tx:", ""))
+                            looked += 1
+                            if looked >= 400:
+                                break
+                        if looked >= 400:
+                            break
 
                 if not txids:
                     continue
@@ -438,7 +448,6 @@ def wl_finalize_from_scanner():
                     if not tx_pays_app_fee(txid, wl=True):
                         continue
 
-                    # Call your existing finalizer endpoint in-process
                     with app.test_request_context('/verify_and_store', method='POST', json={
                         "txId": txid,
                         "reservationId": rid,
@@ -447,11 +456,11 @@ def wl_finalize_from_scanner():
                         resp = verify_and_store()
                         print(f"[WL finalize] matched addr={address} serial={serial} tx={txid} -> {resp.status_code}")
 
-                    # Clean pending key (verify_and_store also handles cleanup)
                     rz_del(key)
                     break
             except Exception as e:
                 print(f"[WL finalize] error on {key}: {e}")
+
 
 # ---------- routes ----------
 @app.route('/')
