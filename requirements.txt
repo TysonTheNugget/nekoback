@@ -7,3 +7,4 @@ cloudinary==1.41.0
 apscheduler==3.10.4
 btclib>=2023.7.12,<2024
 cachetools>=5.3
+tenacity==8.2.3

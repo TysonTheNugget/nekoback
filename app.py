@@ -4,33 +4,42 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from tenacity import retry, stop_after_attempt, wait_exponential
+from cachetools import TTLCache
+import asyncio
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
 # ========= CONFIG (env in prod) =========
 APP_FEE_ADDRESS = os.getenv("APP_FEE_ADDRESS", "bc1p7w28we62hv7vnvm4jcqrn6e8y5y6qfvvuaq8at0jpj8jyq5lymusp5jsvq")
-APP_FEE_SATS    = int(os.getenv("APP_FEE_SATS", "6000"))      # Public mint fee
-WL_FEE_SATS     = int(os.getenv("WL_FEE_SATS", "600"))        # WL fee
-APP_SECRET      = os.getenv("APP_SECRET", "local-dev-secret-change-me")
+APP_FEE_SATS = int(os.getenv("APP_FEE_SATS", "6000"))  # Public mint fee
+WL_FEE_SATS = int(os.getenv("WL_FEE_SATS", "600"))  # WL fee
+APP_SECRET = os.getenv("APP_SECRET", "local-dev-secret-change-me")
 BITCOIN_NETWORK = os.getenv("BITCOIN_NETWORK", "mainnet")
-INTERNAL_TOKEN  = os.environ.get("INTERNAL_TOKEN", "")
-UPSTASH_URL   = os.environ["UPSTASH_REDIS_REST_URL"]
+INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
+UPSTASH_URL = os.environ["UPSTASH_REDIS_REST_URL"]
 UPSTASH_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
-TOTAL_SUPPLY    = int(os.getenv("TOTAL_SUPPLY", "10000"))
-RUN_SCHEDULER   = os.getenv("RUN_SCHEDULER", "1") not in ("0", "false", "False", "")
-HIRO_API_TOKEN  = os.getenv("HIRO_API_TOKEN", "1423e3815899d351c41529064e5b9a52")
-SCAN_URL        = "https://nekonekobackendscan.vercel.app/api/scan"
-WL_FILE_PATH    = os.getenv("WL_INSCRIPTIONS_PATH", None)
+TOTAL_SUPPLY = int(os.getenv("TOTAL_SUPPLY", "10000"))
+RUN_SCHEDULER = os.getenv("RUN_SCHEDULER", "1") not in ("0", "false", "False", "")
+HIRO_API_TOKEN = os.getenv("HIRO_API_TOKEN", "1423e3815899d351c41529064e5b9a52")
+SCAN_URL = "https://nekonekobackendscan.vercel.app/api/scan"
+WL_FILE_PATH = os.getenv("WL_INSCRIPTIONS_PATH", None)
 PUBLIC_MINT_KEY = "public_mint_start_ts"
-FORCE_OPEN_KEY  = "public_mint_open"
+FORCE_OPEN_KEY = "public_mint_open"
+
 # ========================================
-
 SERIAL_REGEX = re.compile(r"\b(\d{10})\b")
-
 current_directory = os.path.dirname(os.path.abspath(__file__))
 SINGLES_DIR = os.path.join(current_directory, 'static', 'Singles')
 os.makedirs(SINGLES_DIR, exist_ok=True)
 
+# In-memory cache for WL inscriptions
+wl_cache = TTLCache(maxsize=1, ttl=3600)  # Cache for 1 hour
 
 def rz_set(key, value):
     return rz_get(f"/set/{key}/{urllib.parse.quote(str(value))}")
@@ -41,19 +50,20 @@ def _rz_result(payload):
         return payload["result"]
     return payload
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def rz_get(path):
     r = requests.get(f"{UPSTASH_URL}{path}",
                      headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
-                     timeout=15)
+                     timeout=30)  # Increased timeout
     r.raise_for_status()
     return _rz_result(r.json())
 
 def rz_post_pipeline(cmds):
     r = requests.post(f"{UPSTASH_URL}/pipeline",
                       headers={"Authorization": f"Bearer {UPSTASH_TOKEN}",
-                               "Content-Type":"application/json"},
+                               "Content-Type": "application/json"},
                       data=json.dumps(cmds),
-                      timeout=20)
+                      timeout=30)  # Increased timeout
     r.raise_for_status()
     data = r.json()
     return [_rz_result(item) for item in data]
@@ -68,6 +78,7 @@ def rz_sismember(key, member):
 
 def rz_sadd(key, member):
     return rz_get(f"/sadd/{key}/{member}")
+
 
 def rz_scard(key):
     res = rz_get(f"/scard/{key}")
@@ -117,7 +128,7 @@ def scan_keys(match_pattern="tx:*", count=1000):
         url = f"{UPSTASH_URL}/scan/{cursor}?count={count}"
         if match_pattern:
             url += f"&match={match_pattern}"
-        r = requests.get(url, headers=headers, timeout=15)
+        r = requests.get(url, headers=headers, timeout=30)  # Increased timeout
         r.raise_for_status()
         data = r.json()
         if isinstance(data, dict) and "result" in data:
@@ -173,7 +184,7 @@ def extract_serial_from_filename(fname: str):
 
 def fetch_tx_outputs(txid: str):
     base = "https://blockstream.info/api" if BITCOIN_NETWORK.lower() == "mainnet" else "https://blockstream.info/testnet/api"
-    r = requests.get(f"{base}/tx/{txid}", timeout=8)
+    r = requests.get(f"{base}/tx/{txid}", timeout=30)  # Increased timeout
     r.raise_for_status()
     j = r.json()
     outs = []
@@ -207,7 +218,7 @@ def create_reservation_id(serial: str, ttl=900, wl=False, inscription_id=None, a
     rid = str(uuid.uuid4())
     payload = {"serial": serial, "wl": bool(wl)}
     if inscription_id: payload["inscriptionId"] = inscription_id
-    if address:        payload["address"] = address
+    if address: payload["address"] = address
     rz_setex(f"resv:{rid}", json.dumps(payload), ttl)
     return rid
 
@@ -231,6 +242,11 @@ def pick_available_filename(preferred_fname=None, max_attempts=100):
 
 # ---------- WL helpers ----------
 def load_wl_inscriptions():
+    cache_key = "wl_inscriptions"
+    cached = wl_cache.get(cache_key)
+    if cached:
+        logger.info(f"[WL] Cache hit for WL inscriptions: {len(cached)} IDs")
+        return cached
     path = WL_FILE_PATH or os.path.join(SINGLES_DIR, 'clean_inscriptions.json')
     try:
         with open(path, 'r', encoding='utf-8') as f:
@@ -247,26 +263,25 @@ def load_wl_inscriptions():
                 ids.append(it.strip())
             elif isinstance(it, dict) and isinstance(it.get("id"), str):
                 ids.append(it["id"].strip())
-        print(f"[WL] Loaded {len(ids)} WL ids from {path}")
+        wl_cache[cache_key] = set(ids)
+        logger.info(f"[WL] Loaded {len(ids)} WL ids from {path}")
         return set(ids)
     except Exception as e:
-        print(f"[WL] Error loading WL from {path}: {e}")
+        logger.error(f"[WL] Error loading WL from {path}: {e}")
         return set()
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def fetch_wallet_inscriptions(address: str):
     cache_key = f"inscriptions:{address}"
     cached = rz_get_json(cache_key)
     if cached:
-        print(f"[WL] Cache hit for {address}: {len(cached)} inscriptions")
+        logger.info(f"[WL] Cache hit for {address}: {len(cached)} inscriptions")
         return cached
-
     headers = {"Authorization": f"Bearer {HIRO_API_TOKEN}"} if HIRO_API_TOKEN else {}
     base = "https://api.hiro.so/ordinals/v1/inscriptions"
     limit = 60
     offset = 0
     out = []
-
-    # leaner retry policy with shorter backoff
     session = requests.Session()
     retry = Retry(
         total=3, connect=3, read=3,
@@ -277,11 +292,10 @@ def fetch_wallet_inscriptions(address: str):
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
-
     try:
         while True:
             url = f"{base}?address={urllib.parse.quote(address)}&limit={limit}&offset={offset}"
-            r = session.get(url, headers=headers, timeout=8)  # was 25
+            r = session.get(url, headers=headers, timeout=30)  # Increased timeout
             if r.status_code == 400 and "limit must be" in (r.text or ""):
                 if limit > 60:
                     limit = 60
@@ -299,14 +313,13 @@ def fetch_wallet_inscriptions(address: str):
             if offset >= 600:  # cap deep scans to avoid rate limits
                 break
             time.sleep(0.2)  # small pause to play nice
-        print(f"[WL] Wallet {address} has {len(out)} inscriptions (sample {out[:4]})")
+        logger.info(f"[WL] Wallet {address} has {len(out)} inscriptions (sample {out[:4]})")
         rz_setex(cache_key, json.dumps(out), 3600)  # 1h cache
         return out
     except Exception as e:
-        print(f"[WL] Hiro fetch error for {address}: {e}")
+        logger.error(f"[WL] Hiro fetch error for {address}: {e}")
         return out
 
-        
 def wl_reconcile_by_counter():
     """
     Fallback: if WL reservation’s serial is already in used_serials, finalize anyway.
@@ -319,16 +332,12 @@ def wl_reconcile_by_counter():
                 info = rz_get_json(key)
                 info = json.loads(info) if isinstance(info, str) else (info or {})
                 address = (info.get("address") or "").strip()
-                serial  = (info.get("serial") or "").strip()
-                insc    = (info.get("inscriptionId") or "").strip()
+                serial = (info.get("serial") or "").strip()
+                insc = (info.get("inscriptionId") or "").strip()
                 if not (rid and serial and insc):
                     continue
-
-                # Only act if counter says the serial is already used
                 if not is_serial_used(serial):
                     continue
-
-                # Try to find a txId from buyer index or fallback scan (nice-to-have)
                 txid = None
                 try:
                     txids = rz_get(f"/smembers/buyer:{address}:txs") or []
@@ -341,19 +350,16 @@ def wl_reconcile_by_counter():
                     if (row.get("serial") or "").strip() == serial:
                         txid = t
                         break
-
                 if txid:
-                    # Use the standard path so you still get metadata
                     with app.test_request_context('/verify_and_store', method='POST', json={
                         "txId": txid,
                         "reservationId": rid,
                         "inscriptionId": insc
                     }):
                         resp = verify_and_store()
-                        print(f"[WL reconcile] serial={serial} used & matched tx={txid} -> {resp.status_code}")
-                    rz_del(key)  # extra safe
+                        logger.info(f"[WL reconcile] serial={serial} used & matched tx={txid} -> {resp.status_code}")
+                    rz_del(key)
                 else:
-                    # No tx found, but counter says used — finalize inline
                     added = rz_sadd("blacklisted_inscriptions", insc)
                     rz_del(f"wl_pending:{rid}")
                     rz_del(f"resv:{rid}")
@@ -361,32 +367,40 @@ def wl_reconcile_by_counter():
                     if address:
                         rz_del(f"temp_blacklist:{address}:{insc}")
                         rz_del(f"wl_lock:{address}")
-                    print(f"[WL reconcile] serial={serial} used; no tx. Blacklisted {insc} (SADD={added}), cleaned rid={rid}")
+                    logger.info(f"[WL reconcile] serial={serial} used; no tx. Blacklisted {insc} (SADD={added}), cleaned rid={rid}")
             except Exception as e:
-                print(f"[WL reconcile] error on {key}: {e}")
+                logger.error(f"[WL reconcile] error on {key}: {e}")
 
-# ---------- rebuild counter from scanner ----------
-def rebuild_used_serials_core():
+async def rebuild_used_serials_core_async():
     added = 0
     total = 0
     for keys in scan_keys(match_pattern="tx:*", count=1000):
-        if not keys: continue
+        if not keys:
+            continue
         for k in keys:
             total += 1
             row = rz_hgetall(k)
-            if not isinstance(row, dict): continue
+            if not isinstance(row, dict):
+                continue
             serial = row.get("serial")
             if serial:
                 rz_sadd("used_serials", serial)
                 added += 1
+            if total % 100 == 0:  # Log progress every 100 keys
+                logger.info(f"[rebuild] Processed {total} keys, added {added} serials")
+            await asyncio.sleep(0)  # Yield control to event loop
+    logger.info(f"[rebuild] Completed: scanned {total} keys, added {added} serials")
     return {"scanned_tx_keys": total, "added_to_used_serials": added}
-    
+
+def rebuild_used_serials_core():
+    return asyncio.run(rebuild_used_serials_core_async())
+
 def _parse_iso_utc(s: str) -> int:
     """
     Very small ISO parser. Accepts:
-      - 'YYYY-MM-DDTHH:MM:SSZ'  (UTC)
-      - 'YYYY-MM-DD HH:MM:SS'   (assumed UTC)
-      - 'YYYY-MM-DDTHH:MM:SS'   (assumed UTC)
+      - 'YYYY-MM-DDTHH:MM:SSZ' (UTC)
+      - 'YYYY-MM-DD HH:MM:SS' (assumed UTC)
+      - 'YYYY-MM-DDTHH:MM:SS' (assumed UTC)
     Returns unix seconds, or raises ValueError.
     """
     s = s.strip()
@@ -394,11 +408,10 @@ def _parse_iso_utc(s: str) -> int:
         s = s[:-1].replace("T", " ")
     else:
         s = s.replace("T", " ")
-    # Now s like 'YYYY-MM-DD HH:MM:SS'
     y, m, d = map(int, s[:10].split("-"))
     hh, mm, ss = map(int, s[11:19].split(":"))
-    return int(time.mktime((y, m, d, hh, mm, ss, 0, 0, 0))) - time.timezone  # convert to UTC
-    
+    return int(time.mktime((y, m, d, hh, mm, ss, 0, 0, 0))) - time.timezone
+
 def wl_finalize_from_scanner(max_items: int = 60):
     processed = 0
     for keys in scan_keys(match_pattern="wl_pending:*", count=200):
@@ -411,20 +424,16 @@ def wl_finalize_from_scanner(max_items: int = 60):
                 info = rz_get_json(key)
                 info = json.loads(info) if isinstance(info, str) else (info or {})
                 address = (info.get("address") or "").strip()
-                serial  = (info.get("serial") or "").strip()
-                insc    = (info.get("inscriptionId") or "").strip()
+                serial = (info.get("serial") or "").strip()
+                insc = (info.get("inscriptionId") or "").strip()
                 if not (rid and address and serial):
                     continue
-
-                # Fast path: buyer index
                 try:
                     txids = rz_get(f"/smembers/buyer:{address}:txs") or []
                 except Exception:
                     txids = []
                 if not isinstance(txids, list):
                     txids = []
-
-                # SMALL fallback: only look at a limited slice of tx:* (prevents long runs)
                 if not txids:
                     looked = 0
                     for tkeys in scan_keys(match_pattern="tx:*", count=200):
@@ -437,30 +446,25 @@ def wl_finalize_from_scanner(max_items: int = 60):
                                 break
                         if looked >= 400:
                             break
-
                 if not txids:
                     continue
-
                 for txid in txids:
                     row = rz_hgetall(f"tx:{txid}") or {}
                     if (row.get("serial") or "").strip() != serial:
                         continue
                     if not tx_pays_app_fee(txid, wl=True):
                         continue
-
                     with app.test_request_context('/verify_and_store', method='POST', json={
                         "txId": txid,
                         "reservationId": rid,
                         "inscriptionId": insc
                     }):
                         resp = verify_and_store()
-                        print(f"[WL finalize] matched addr={address} serial={serial} tx={txid} -> {resp.status_code}")
-
+                        logger.info(f"[WL finalize] matched addr={address} serial={serial} tx={txid} -> {resp.status_code}")
                     rz_del(key)
                     break
             except Exception as e:
-                print(f"[WL finalize] error on {key}: {e}")
-
+                logger.error(f"[WL finalize] error on {key}: {e}")
 
 # ---------- routes ----------
 @app.route('/')
@@ -490,24 +494,14 @@ def reservation_status():
 def serve_original(fname):
     path = os.path.join(SINGLES_DIR, fname)
     return send_file(path, mimetype='image/png', as_attachment=False)
-    
+
 @app.route('/admin/set_public_mint', methods=['POST'])
 def admin_set_public_mint():
-    # protect with your INTERNAL_TOKEN
     if request.headers.get("X-Internal-Token") != os.getenv("INTERNAL_TOKEN", ""):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-
     data = request.get_json(force=True) or {}
-    # Options:
-    # 1) {"publicMintOpen": true/false}
-    # 2) {"publicMintStartTs": 1736000000}              # absolute unix seconds (UTC)
-    # 3) {"hoursFromNow": 72}                           # relative
-    # 4) {"isoUtc": "2025-09-02T18:00:00Z"}             # ISO UTC
-
-    # Force open toggle (optional)
     if "publicMintOpen" in data:
         rz_set(FORCE_OPEN_KEY, "1" if data["publicMintOpen"] else "0")
-
     new_start = None
     if "publicMintStartTs" in data:
         new_start = int(data["publicMintStartTs"])
@@ -518,13 +512,10 @@ def admin_set_public_mint():
             new_start = _parse_iso_utc(str(data["isoUtc"]))
         except Exception:
             return jsonify({"ok": False, "error": "invalid isoUtc"}), 400
-
     if new_start is not None:
         if new_start < 0:
             return jsonify({"ok": False, "error": "invalid start timestamp"}), 400
         rz_set(PUBLIC_MINT_KEY, new_start)
-
-    # Return the updated state
     v = rz_get(f"/get/{PUBLIC_MINT_KEY}")
     start_ts = int(v) if v not in (None, "null", "") else 0
     o = rz_get(f"/get/{FORCE_OPEN_KEY}")
@@ -535,7 +526,7 @@ def admin_set_public_mint():
 def randomize_image():
     try:
         fname, serial = pick_available_filename()
-        image_info = {'background': fname,'serial': serial,'fightCode': ''}
+        image_info = {'background': fname, 'serial': serial, 'fightCode': ''}
         return jsonify({'imageUrl': f"/file/{fname}", 'imageInfo': image_info})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -555,8 +546,8 @@ def reserve_for_image():
                 raise RuntimeError("Could not reserve any image (race)")
         rid = create_reservation_id(serial, ttl=900, wl=False)
         return jsonify({
-            "ok": True,"filename": fname,"serial": serial,"reservationId": rid,
-            "expiresAt": int(time.time()) + 900,"imageUrl": f"/file/{fname}"
+            "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
+            "expiresAt": int(time.time()) + 900, "imageUrl": f"/file/{fname}"
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -575,7 +566,6 @@ def prepare_inscription():
     return jsonify({"error": "Public mint locked"}), 403
 
 # ===== WL endpoints =====
-
 @app.route('/prepare_wl_inscription', methods=['POST'])
 def prepare_wl_inscription():
     if not APP_FEE_ADDRESS or WL_FEE_SATS <= 0:
@@ -584,7 +574,7 @@ def prepare_wl_inscription():
     payload = f"{APP_FEE_ADDRESS}:{WL_FEE_SATS}:{ts}"
     sig = sign_data(payload)
     return jsonify({
-        "appFeeAddress": APP_FEE_ADDRESS,"appFee": WL_FEE_SATS,"ts": ts,"sig": sig,
+        "appFeeAddress": APP_FEE_ADDRESS, "appFee": WL_FEE_SATS, "ts": ts, "sig": sig,
         "network": "Mainnet" if BITCOIN_NETWORK.lower() == "mainnet" else "Testnet"
     })
 
@@ -610,7 +600,7 @@ def check_wl_eligibility():
             return jsonify({"ok": False, "eligible": False, "error": "No valid whitelist inscriptions found"})
         return jsonify({"ok": True, "eligible": True, "inscriptions": valid})
     except Exception as e:
-        print(f"[WL] Error in check_wl_eligibility for {address}: {e}")
+        logger.error(f"[WL] Error in check_wl_eligibility for {address}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route('/claim_wl', methods=['POST'])
@@ -630,7 +620,6 @@ def claim_wl():
         wallet_ids = fetch_wallet_inscriptions(address)
         if inscription_id not in wallet_ids:
             return jsonify({"ok": False, "error": "Inscription not found in wallet"}), 400
-        # place holds
         fname, serial = pick_available_filename()
         ok = try_hold_serial(serial, holder_id, ttl=1200)
         if not ok:
@@ -640,16 +629,15 @@ def claim_wl():
                 raise RuntimeError("Could not reserve any image")
         rid = create_reservation_id(serial, ttl=1200, wl=True, inscription_id=inscription_id, address=address)
         rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 1200)
-        # temp lock the exact inscription so it can't be reused while minting
         rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 60)
-        print(f"[WL] Reserved {fname} (serial {serial}) for {address} WL rid={rid}")
+        logger.info(f"[WL] Reserved {fname} (serial {serial}) for {address} WL rid={rid}")
         return jsonify({
-            "ok": True,"filename": fname,"serial": serial,"reservationId": rid,
-            "expiresAt": int(time.time()) + 1200,"imageUrl": f"/file/{fname}",
+            "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
+            "expiresAt": int(time.time()) + 1200, "imageUrl": f"/file/{fname}",
             "inscriptionId": inscription_id
         })
     except Exception as e:
-        print(f"[WL] Error in claim_wl for {address}: {e}")
+        logger.error(f"[WL] Error in claim_wl for {address}: {e}")
         rz_del(f"temp_blacklist:{address}:{inscription_id}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -670,10 +658,10 @@ def cancel_wl_reservation():
             rz_del(f"resv:{reservationId}")
             rz_del(f"hold:{serial}")
             rz_del(f"temp_blacklist:{address}:{inscription_id}")
-            print(f"[WL] Cancelled reservation {reservationId} for serial {serial}")
+            logger.info(f"[WL] Cancelled reservation {reservationId} for serial {serial}")
         return jsonify({"ok": True})
     except Exception as e:
-        print(f"[WL] Error in cancel_wl_reservation: {e}")
+        logger.error(f"[WL] Error in cancel_wl_reservation: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route('/verify_and_store', methods=['POST'])
@@ -686,12 +674,9 @@ def verify_and_store():
     data = request.get_json(force=True)
     txId = data.get('txId')
     reservationId = data.get('reservationId')
-    body_inscription = data.get('inscriptionId')  # preferred for WL
-
+    body_inscription = data.get('inscriptionId')
     if not txId or not reservationId:
         return jsonify({"ok": False, "error": "Missing txId or reservationId"}), 400
-
-    # Load reservation
     resv_data = rz_get_json(f"resv:{reservationId}")
     if not resv_data:
         return jsonify({"ok": False, "error": "Invalid or expired reservation"}), 400
@@ -704,25 +689,17 @@ def verify_and_store():
         address = resv.get("address")
     except Exception:
         return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
-
-    # Fee check (unconfirmed ok)
     if not tx_pays_app_fee(txId, wl=wl):
         return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
-
     try:
-        # mark used + cleanup
         rz_sadd("used_serials", serial)
         rz_del(f"hold:{serial}")
         rz_del(f"resv:{reservationId}")
-
-        # WL blacklist deterministic
         if wl and chosen_inscription:
             added = rz_sadd("blacklisted_inscriptions", chosen_inscription)
-            print(f"[VS] WL blacklisted {chosen_inscription} (SADD={added}) for tx {txId}")
+            logger.info(f"[VS] WL blacklisted {chosen_inscription} (SADD={added}) for tx {txId}")
             if address:
                 rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
-
-        # record tx meta
         rz_hset_many(f"tx:{txId}", {
             "serial": serial,
             "wl": "1" if wl else "0"
@@ -735,11 +712,11 @@ def verify_and_store():
             "blacklistedInscription": chosen_inscription if wl else None
         })
     except Exception as e:
-        print(f"[VS] verify_and_store error: {e}")
+        logger.error(f"[VS] verify_and_store error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # ---------- Admin ----------
-@app.route('/admin/rebuild_used_serials', methods=['GET','POST'])
+@app.route('/admin/rebuild_used_serials', methods=['GET', 'POST'])
 def rebuild_used_serials():
     token = request.headers.get("X-Internal-Token")
     if token != os.environ.get("INTERNAL_TOKEN"):
@@ -750,23 +727,20 @@ def rebuild_used_serials():
 @app.route('/healthz')
 def healthz():
     return "ok", 200
-    
+
 @app.route('/config', methods=['GET'])
 def get_config():
-    # read current start_ts and optional force flag
     now = int(time.time())
     try:
         v = rz_get(f"/get/{PUBLIC_MINT_KEY}")
         start_ts = int(v) if v not in (None, "null", "") else 0
     except Exception:
         start_ts = 0
-
     try:
         o = rz_get(f"/get/{FORCE_OPEN_KEY}")
         forced_open = (str(o) == "1")
     except Exception:
         forced_open = False
-
     public_open = forced_open or (start_ts == 0) or (now >= start_ts)
     return jsonify({
         "now": now,
@@ -775,21 +749,21 @@ def get_config():
     })
 
 # ---------- Periodic: ping scanner + rebuild counter ----------
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def ping_scanner_and_rebuild():
     try:
-        r = requests.get(SCAN_URL, timeout=8)
-        print(f"[scanner] {SCAN_URL} -> {r.status_code}")
+        r = requests.get(SCAN_URL, timeout=30)  # Increased timeout
+        logger.info(f"[scanner] {SCAN_URL} -> {r.status_code}")
     except Exception as e:
-        print(f"[scanner] error: {e}")
+        logger.error(f"[scanner] error: {e}")
     try:
         res = rebuild_used_serials_core()
-        print(f"[rebuild] {res}")
+        logger.info(f"[rebuild] {res}")
     except Exception as e:
-        print(f"[rebuild] error: {e}")
+        logger.error(f"[rebuild] error: {e}")
 
 # ---------- Scheduler setup ----------
 def _try_lock(key: str, ttl: int = 120) -> bool:
-    # Acquire a Redis lock for `ttl` seconds. If Upstash hiccups, fail open.
     try:
         return rz_setex_nx(key, "1", ttl)
     except Exception:
@@ -804,7 +778,7 @@ def _release_lock(key: str):
 def _single_flight(fn, lock_key: str, ttl: int = 120):
     def _wrapped():
         if not _try_lock(lock_key, ttl):
-            return  # previous run still active
+            return
         try:
             fn()
         finally:
@@ -816,36 +790,31 @@ if RUN_SCHEDULER:
     try:
         _ = rz_scard("used_serials")
         scheduler = BackgroundScheduler(daemon=True)
-
-        # Slower cadence + coalesce + misfire grace to avoid pileups
         scheduler.add_job(
             _single_flight(ping_scanner_and_rebuild, "lock:ping_scanner", ttl=90),
             'interval',
-            seconds=60,
-            max_instances=1,
+            seconds=120,  # Increased interval
+            max_instances=2,  # Allow slight concurrency
             coalesce=True,
             misfire_grace_time=10,
         )
-
         scheduler.add_job(
             _single_flight(wl_finalize_from_scanner, "lock:wl_finalize", ttl=90),
             'interval',
-            seconds=30,
-            max_instances=1,
+            seconds=60,  # Increased interval
+            max_instances=2,  # Allow slight concurrency
             coalesce=True,
             misfire_grace_time=10,
         )
-
         scheduler.add_job(
             _single_flight(wl_reconcile_by_counter, "lock:wl_reconcile", ttl=90),
             'interval',
             seconds=45,
-            max_instances=1,
+            max_instances=2,  # Allow slight concurrency
             coalesce=True,
             misfire_grace_time=10,
         )
-
         scheduler.start()
-        print("[scheduler] started: ping=60s, finalize=30s, reconcile=45s (single-flight locks, coalesce, misfire=10)")
+        logger.info("[scheduler] started: ping=120s, finalize=60s, reconcile=45s (single-flight locks, coalesce, misfire=10)")
     except Exception as e:
-        print(f"[scheduler] failed to start: {e}")
+        logger.error(f"[scheduler] failed to start: {e}")
