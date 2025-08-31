@@ -173,7 +173,7 @@ def extract_serial_from_filename(fname: str):
 
 def fetch_tx_outputs(txid: str):
     base = "https://blockstream.info/api" if BITCOIN_NETWORK.lower() == "mainnet" else "https://blockstream.info/testnet/api"
-    r = requests.get(f"{base}/tx/{txid}", timeout=20)
+    r = requests.get(f"{base}/tx/{txid}", timeout=8)
     r.raise_for_status()
     j = r.json()
     outs = []
@@ -259,20 +259,29 @@ def fetch_wallet_inscriptions(address: str):
     if cached:
         print(f"[WL] Cache hit for {address}: {len(cached)} inscriptions")
         return cached
-    
+
     headers = {"Authorization": f"Bearer {HIRO_API_TOKEN}"} if HIRO_API_TOKEN else {}
     base = "https://api.hiro.so/ordinals/v1/inscriptions"
     limit = 60
     offset = 0
     out = []
+
+    # leaner retry policy with shorter backoff
     session = requests.Session()
-    retries = Retry(total=3, backoff_factor=2, status_forcelist=[429])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    
+    retry = Retry(
+        total=3, connect=3, read=3,
+        backoff_factor=0.4,
+        status_forcelist=[429, 500, 502, 503, 504],
+        respect_retry_after_header=True
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
     try:
         while True:
             url = f"{base}?address={urllib.parse.quote(address)}&limit={limit}&offset={offset}"
-            r = session.get(url, headers=headers, timeout=25)
+            r = session.get(url, headers=headers, timeout=8)  # was 25
             if r.status_code == 400 and "limit must be" in (r.text or ""):
                 if limit > 60:
                     limit = 60
@@ -287,11 +296,11 @@ def fetch_wallet_inscriptions(address: str):
                 if isinstance(_id, str):
                     out.append(_id)
             offset += len(results)
-            if offset >= 10000:
+            if offset >= 600:  # cap deep scans to avoid rate limits
                 break
-            time.sleep(0.5)  # Small delay to avoid rate limits
+            time.sleep(0.2)  # small pause to play nice
         print(f"[WL] Wallet {address} has {len(out)} inscriptions (sample {out[:4]})")
-        rz_setex(cache_key, json.dumps(out), 3600)  # Cache for 1 hour
+        rz_setex(cache_key, json.dumps(out), 3600)  # 1h cache
         return out
     except Exception as e:
         print(f"[WL] Hiro fetch error for {address}: {e}")
@@ -759,7 +768,7 @@ def get_config():
 # ---------- Periodic: ping scanner + rebuild counter ----------
 def ping_scanner_and_rebuild():
     try:
-        r = requests.get(SCAN_URL, timeout=20)
+        r = requests.get(SCAN_URL, timeout=8)
         print(f"[scanner] {SCAN_URL} -> {r.status_code}")
     except Exception as e:
         print(f"[scanner] error: {e}")
@@ -770,22 +779,64 @@ def ping_scanner_and_rebuild():
         print(f"[rebuild] error: {e}")
 
 # ---------- Scheduler setup ----------
+def _try_lock(key: str, ttl: int = 120) -> bool:
+    # Acquire a Redis lock for `ttl` seconds. If Upstash hiccups, fail open.
+    try:
+        return rz_setex_nx(key, "1", ttl)
+    except Exception:
+        return True  # allow job to run rather than stall
+
+def _release_lock(key: str):
+    try:
+        rz_del(key)
+    except Exception:
+        pass
+
+def _single_flight(fn, lock_key: str, ttl: int = 120):
+    def _wrapped():
+        if not _try_lock(lock_key, ttl):
+            return  # previous run still active
+        try:
+            fn()
+        finally:
+            _release_lock(lock_key)
+    return _wrapped
+
 scheduler = None
 if RUN_SCHEDULER:
     try:
         _ = rz_scard("used_serials")
         scheduler = BackgroundScheduler(daemon=True)
 
-        # ping scanner + rebuild every 10s (keeps counter live)
-        scheduler.add_job(ping_scanner_and_rebuild, 'interval', seconds=15, max_instances=1, coalesce=True)
+        # Slower cadence + coalesce + misfire grace to avoid pileups
+        scheduler.add_job(
+            _single_flight(ping_scanner_and_rebuild, "lock:ping_scanner", ttl=90),
+            'interval',
+            seconds=60,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=10,
+        )
 
-        # WL auto-finalizer (uses buyer:{address}:txs from scanner) every 10s
-        scheduler.add_job(wl_finalize_from_scanner, 'interval', seconds=10, max_instances=1, coalesce=True)
-        
-        scheduler.add_job(wl_reconcile_by_counter, 'interval', seconds=10, max_instances=1, coalesce=True)
+        scheduler.add_job(
+            _single_flight(wl_finalize_from_scanner, "lock:wl_finalize", ttl=90),
+            'interval',
+            seconds=30,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=10,
+        )
 
+        scheduler.add_job(
+            _single_flight(wl_reconcile_by_counter, "lock:wl_reconcile", ttl=90),
+            'interval',
+            seconds=45,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=10,
+        )
 
         scheduler.start()
-        print("[scheduler] started: scan+rebuild+wl-finalizer every 10s")
+        print("[scheduler] started: ping=60s, finalize=30s, reconcile=45s (single-flight locks, coalesce, misfire=10)")
     except Exception as e:
         print(f"[scheduler] failed to start: {e}")
