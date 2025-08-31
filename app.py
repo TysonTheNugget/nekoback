@@ -19,6 +19,8 @@ RUN_SCHEDULER   = os.getenv("RUN_SCHEDULER", "1") not in ("0", "false", "False",
 HIRO_API_TOKEN  = os.getenv("HIRO_API_TOKEN", "1423e3815899d351c41529064e5b9a52")
 SCAN_URL        = "https://nekonekobackendscan.vercel.app/api/scan"
 WL_FILE_PATH    = os.getenv("WL_INSCRIPTIONS_PATH", None)
+PUBLIC_MINT_KEY = "public_mint_start_ts"
+FORCE_OPEN_KEY  = "public_mint_open"
 # ========================================
 
 SERIAL_REGEX = re.compile(r"\b(\d{10})\b")
@@ -26,6 +28,10 @@ SERIAL_REGEX = re.compile(r"\b(\d{10})\b")
 current_directory = os.path.dirname(os.path.abspath(__file__))
 SINGLES_DIR = os.path.join(current_directory, 'static', 'Singles')
 os.makedirs(SINGLES_DIR, exist_ok=True)
+
+
+def rz_set(key, value):
+    return rz_get(f"/set/{key}/{urllib.parse.quote(str(value))}")
 
 # ---------- Upstash helpers ----------
 def _rz_result(payload):
@@ -351,6 +357,24 @@ def rebuild_used_serials_core():
                 added += 1
     return {"scanned_tx_keys": total, "added_to_used_serials": added}
     
+def _parse_iso_utc(s: str) -> int:
+    """
+    Very small ISO parser. Accepts:
+      - 'YYYY-MM-DDTHH:MM:SSZ'  (UTC)
+      - 'YYYY-MM-DD HH:MM:SS'   (assumed UTC)
+      - 'YYYY-MM-DDTHH:MM:SS'   (assumed UTC)
+    Returns unix seconds, or raises ValueError.
+    """
+    s = s.strip()
+    if s.endswith("Z"):
+        s = s[:-1].replace("T", " ")
+    else:
+        s = s.replace("T", " ")
+    # Now s like 'YYYY-MM-DD HH:MM:SS'
+    y, m, d = map(int, s[:10].split("-"))
+    hh, mm, ss = map(int, s[11:19].split(":"))
+    return int(time.mktime((y, m, d, hh, mm, ss, 0, 0, 0))) - time.timezone  # convert to UTC
+    
 def wl_finalize_from_scanner():
     for keys in scan_keys(match_pattern="wl_pending:*", count=200):
         for key in keys:
@@ -433,6 +457,46 @@ def reservation_status():
 def serve_original(fname):
     path = os.path.join(SINGLES_DIR, fname)
     return send_file(path, mimetype='image/png', as_attachment=False)
+    
+@app.route('/admin/set_public_mint', methods=['POST'])
+def admin_set_public_mint():
+    # protect with your INTERNAL_TOKEN
+    if request.headers.get("X-Internal-Token") != os.getenv("INTERNAL_TOKEN", ""):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    data = request.get_json(force=True) or {}
+    # Options:
+    # 1) {"publicMintOpen": true/false}
+    # 2) {"publicMintStartTs": 1736000000}              # absolute unix seconds (UTC)
+    # 3) {"hoursFromNow": 72}                           # relative
+    # 4) {"isoUtc": "2025-09-02T18:00:00Z"}             # ISO UTC
+
+    # Force open toggle (optional)
+    if "publicMintOpen" in data:
+        rz_set(FORCE_OPEN_KEY, "1" if data["publicMintOpen"] else "0")
+
+    new_start = None
+    if "publicMintStartTs" in data:
+        new_start = int(data["publicMintStartTs"])
+    elif "hoursFromNow" in data:
+        new_start = int(time.time()) + int(data["hoursFromNow"]) * 3600
+    elif "isoUtc" in data:
+        try:
+            new_start = _parse_iso_utc(str(data["isoUtc"]))
+        except Exception:
+            return jsonify({"ok": False, "error": "invalid isoUtc"}), 400
+
+    if new_start is not None:
+        if new_start < 0:
+            return jsonify({"ok": False, "error": "invalid start timestamp"}), 400
+        rz_set(PUBLIC_MINT_KEY, new_start)
+
+    # Return the updated state
+    v = rz_get(f"/get/{PUBLIC_MINT_KEY}")
+    start_ts = int(v) if v not in (None, "null", "") else 0
+    o = rz_get(f"/get/{FORCE_OPEN_KEY}")
+    forced_open = (str(o) == "1")
+    return jsonify({"ok": True, "publicMintStartTs": start_ts, "publicMintOpen": forced_open})
 
 @app.route('/randomize', methods=['POST'])
 def randomize_image():
@@ -661,6 +725,29 @@ def rebuild_used_serials():
 @app.route('/healthz')
 def healthz():
     return "ok", 200
+    
+@app.route('/config', methods=['GET'])
+def get_config():
+    # read current start_ts and optional force flag
+    now = int(time.time())
+    try:
+        v = rz_get(f"/get/{PUBLIC_MINT_KEY}")
+        start_ts = int(v) if v not in (None, "null", "") else 0
+    except Exception:
+        start_ts = 0
+
+    try:
+        o = rz_get(f"/get/{FORCE_OPEN_KEY}")
+        forced_open = (str(o) == "1")
+    except Exception:
+        forced_open = False
+
+    public_open = forced_open or (start_ts == 0) or (now >= start_ts)
+    return jsonify({
+        "now": now,
+        "publicMintStartTs": start_ts,
+        "publicMintOpen": public_open
+    })
 
 # ---------- Periodic: ping scanner + rebuild counter ----------
 def ping_scanner_and_rebuild():
