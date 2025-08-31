@@ -539,15 +539,7 @@ def supply():
 
 @app.route('/prepare_inscription', methods=['POST'])
 def prepare_inscription():
-    if not APP_FEE_ADDRESS or APP_FEE_SATS <= 0:
-        return jsonify({"error": "Server missing APP_FEE_ADDRESS/APP_FEE_SATS"}), 500
-    ts = int(time.time())
-    payload = f"{APP_FEE_ADDRESS}:{APP_FEE_SATS}:{ts}"
-    sig = sign_data(payload)
-    return jsonify({
-        "appFeeAddress": APP_FEE_ADDRESS,"appFee": APP_FEE_SATS,"ts": ts,"sig": sig,
-        "network": "Mainnet" if BITCOIN_NETWORK.lower() == "mainnet" else "Testnet"
-    })
+    return jsonify({"error": "Public mint locked"}), 403
 
 # ===== WL endpoints =====
 
