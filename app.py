@@ -252,17 +252,25 @@ def load_wl_inscriptions():
         return set()
 
 def fetch_wallet_inscriptions(address: str):
-    headers = {}
-    if HIRO_API_TOKEN:
-        headers["Authorization"] = f"Bearer {HIRO_API_TOKEN}"
+    cache_key = f"inscriptions:{address}"
+    cached = rz_get_json(cache_key)
+    if cached:
+        print(f"[WL] Cache hit for {address}: {len(cached)} inscriptions")
+        return cached
+    
+    headers = {"Authorization": f"Bearer {HIRO_API_TOKEN}"} if HIRO_API_TOKEN else {}
     base = "https://api.hiro.so/ordinals/v1/inscriptions"
     limit = 60
     offset = 0
     out = []
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=2, status_forcelist=[429])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
     try:
         while True:
             url = f"{base}?address={urllib.parse.quote(address)}&limit={limit}&offset={offset}"
-            r = requests.get(url, headers=headers, timeout=25)
+            r = session.get(url, headers=headers, timeout=25)
             if r.status_code == 400 and "limit must be" in (r.text or ""):
                 if limit > 60:
                     limit = 60
@@ -270,18 +278,23 @@ def fetch_wallet_inscriptions(address: str):
             r.raise_for_status()
             j = r.json() or {}
             results = j.get("results") or []
-            if not results: break
+            if not results:
+                break
             for it in results:
                 _id = it.get("id")
                 if isinstance(_id, str):
                     out.append(_id)
             offset += len(results)
-            if offset >= 10000: break
+            if offset >= 10000:
+                break
+            time.sleep(0.5)  # Small delay to avoid rate limits
         print(f"[WL] Wallet {address} has {len(out)} inscriptions (sample {out[:4]})")
+        rz_setex(cache_key, json.dumps(out), 3600)  # Cache for 1 hour
         return out
     except Exception as e:
         print(f"[WL] Hiro fetch error for {address}: {e}")
         return out
+
         
 def wl_reconcile_by_counter():
     """
