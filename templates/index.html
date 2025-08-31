@@ -246,7 +246,7 @@
       <button id="claimWLButton" class="btn">Claim WL</button>
       <button id="mintButton" class="btn" disabled>
         <span class="btn-label">Mint</span>
-        <span id="mintEtaPill" class="pill">Opens in 00:00</span>
+        <span id="mintEtaPill" class="pill">Opens</span>
       </button>
     </div>
     <div class="image-wrap">
@@ -719,6 +719,8 @@
         const remaining = startTs - serverNow;
         if (remaining <= 0) {
           unlockButton();
+          document.querySelector('#mintButton .btn-label').textContent = "Mint"; // 👈 force label
+          pill.style.display = "none"; // 👈 hide the countdown pill
           clearInterval(timer);
           return;
         }
