@@ -305,7 +305,7 @@ def fetch_wallet_inscriptions(address: str):
     try:
         while True:
             url = f"{base}?address={urllib.parse.quote(address)}&limit={limit}&offset={offset}"
-            r = session.get(url, headers=headers, timeout=30)  # Increased timeout
+            r = session.get(url, headers=headers, timeout=30)
             if r.status_code == 400 and "limit must be" in (r.text or ""):
                 if limit > 60:
                     limit = 60
@@ -320,11 +320,10 @@ def fetch_wallet_inscriptions(address: str):
                 if isinstance(_id, str):
                     out.append(_id)
             offset += len(results)
-            if offset >= 600:  # cap deep scans to avoid rate limits
-                break
-            time.sleep(0.2)  # small pause to play nice
+            # Removed cap: if offset >= 600: break
+            time.sleep(1.2 if not HIRO_API_TOKEN else 0.2)  # Longer delay for unauthenticated
         logger.info(f"[WL] Wallet {address} has {len(out)} inscriptions (sample {out[:4]})")
-        rz_setex(cache_key, json.dumps(out), 3600)  # 1h cache
+        rz_setex(cache_key, json.dumps(out), 3600)
         return out
     except Exception as e:
         logger.error(f"[WL] Hiro fetch error for {address}: {e}")
