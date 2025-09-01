@@ -615,7 +615,7 @@ def check_wl_eligibility():
                 else:
                     valid.append(ins)
         if not valid:
-            return jsonify({"ok": False, "eligible": False, "error": "No valid whitelist inscriptions found"})
+            return jsonify({"ok": False, "eligible": False, "error": "No valid whitelist inscriptions found.If WL Mint Attempt was Cancelled must wait 15 minutes"})
         return jsonify({"ok": True, "eligible": True, "inscriptions": valid})
     except Exception as e:
         logger.error(f"[WL] Error in check_wl_eligibility for {address}: {e}")
