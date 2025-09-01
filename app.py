@@ -210,11 +210,11 @@ def is_serial_used(serial: str) -> bool:
 def is_serial_on_hold(serial: str) -> bool:
     return rz_exists(f"hold:{serial}")
 
-def try_hold_serial(serial: str, holder_id: str, ttl=1800) -> bool:
+def try_hold_serial(serial: str, holder_id: str, ttl=1900) -> bool:
     payload = json.dumps({"holder": holder_id, "ts": int(time.time()), "exp": int(time.time()) + ttl})
     return rz_setex_nx(f"hold:{serial}", payload, ttl)
 
-def create_reservation_id(serial: str, ttl=1800, wl=False, inscription_id=None, address=None) -> str:
+def create_reservation_id(serial: str, ttl=1900, wl=False, inscription_id=None, address=None) -> str:
     rid = str(uuid.uuid4())
     payload = {"serial": serial, "wl": bool(wl)}
     if inscription_id:
@@ -687,79 +687,60 @@ def cancel_wl_reservation():
 
 @app.route('/verify_and_store', methods=['POST'])
 def verify_and_store():
-    """
-    Finalize a mint when a tx is detected.
-    - Scanner can call this directly with txId + serial (even if reservation expired).
-    - Enforces uniqueness with SADD used_serials.
-    - Clears all reservation/hold mappings if present.
-    """
-    data = request.get_json(force=True) or {}
-    txId = data.get('txId')
-    reservationId = data.get('reservationId')  # optional if expired
-    body_inscription = data.get('inscriptionId')
-    serial = None
-    wl = False
-    chosen_inscription = None
-    address = None
-
-    if not txId:
-        return jsonify({"ok": False, "error": "Missing txId"}), 400
-
-    resv_data = rz_get_json(f"resv:{reservationId}") if reservationId else None
-    if resv_data:
-        try:
-            resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
-            serial = resv.get("serial")
-            wl = bool(resv.get("wl", False))
-            chosen_inscription = body_inscription or resv.get("inscriptionId")
-            address = resv.get("address")
-        except Exception:
-            return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
-    else:
-        # NEW: Grace path for scanner — allow finalize even if reservation expired
-        serial = data.get("serial")
-        wl = bool(data.get("wl", False))
-        chosen_inscription = body_inscription
-        address = data.get("address")
-
-    if not serial:
-        return jsonify({"ok": False, "error": "Missing serial"}), 400
-
-    if not tx_pays_app_fee(txId, wl=wl):
-        return jsonify({"ok": False, "error": "Awaiting confirmation ฅ^•ﻌ•^ฅ"}), 400
-
-    try:
-        added = rz_sadd("used_serials", serial)
-        if added != 1:
-            return jsonify({"ok": False, "error": "Serial already used"}), 400
-
-        # Cleanup if reservation existed
-        if reservationId:
-            rz_del(f"resv:{reservationId}")
-        rz_del(f"hold:{serial}")
-        rz_del(f"resv_for_serial:{serial}")
-
-        if wl and chosen_inscription:
-            sadded = rz_sadd("blacklisted_inscriptions", chosen_inscription)
-            logger.info(f"[VS] WL blacklisted {chosen_inscription} (SADD={sadded}) for tx {txId}")
-            if address:
-                rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
-
-        rz_hset_many(f"tx:{txId}", {
-            "serial": serial,
-            "wl": "1" if wl else "0"
-        })
-
-        return jsonify({
-            "ok": True,
-            "txId": txId,
-            "serial": serial,
-            "wl": wl,
-            "blacklistedInscription": chosen_inscription if wl else None
-        })
-    except Exception as e:
-        logger.error(f"[VS] verify_and_store error: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+    """
+    Called by client (public) or WL flow when you have a txId ready.
+    - Increments used_serials immediately (uniqueness enforced).
+    - For WL, blacklists the exact inscription id passed/reserved.
+    """
+    data = request.get_json(force=True)
+    txId = data.get('txId')
+    reservationId = data.get('reservationId')
+    body_inscription = data.get('inscriptionId')
+    if not txId or not reservationId:
+        return jsonify({"ok": False, "error": "Missing txId or reservationId"}), 400
+    resv_data = rz_get_json(f"resv:{reservationId}")
+    if not resv_data:
+        return jsonify({"ok": False, "error": "Invalid or expired reservation"}), 400
+    try:
+        resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
+        serial = resv.get("serial")
+        wl = bool(resv.get("wl", False))
+        resv_inscription = resv.get("inscriptionId")
+        chosen_inscription = body_inscription or resv_inscription
+        address = resv.get("address")
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
+    if not tx_pays_app_fee(txId, wl=wl):
+        return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
+    try:
+        # OPTIONAL but recommended: enforce uniqueness by checking SADD result
+        added = rz_sadd("used_serials", serial)
+        if added != 1:
+            return jsonify({"ok": False, "error": "Serial already used"}), 400
+        rz_del(f"hold:{serial}")
+        rz_del(f"resv:{reservationId}")
+        # NEW: drop the serial->rid guard (done on success)
+        if serial:
+            rz_del(f"resv_for_serial:{serial}")
+        if wl and chosen_inscription:
+            sadded = rz_sadd("blacklisted_inscriptions", chosen_inscription)
+            logger.info(f"[VS] WL blacklisted {chosen_inscription} (SADD={sadded}) for tx {txId}")
+            if address:
+                rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
+        rz_hset_many(f"tx:{txId}", {
+            "serial": serial,
+            "wl": "1" if wl else "0"
+        })
+        return jsonify({
+            "ok": True,
+            "txId": txId,
+            "serial": serial,
+            "wl": wl,
+            "blacklistedInscription": chosen_inscription if wl else None
+        })
+    except Exception as e:
+        logger.error(f"[VS] verify_and_store error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 
