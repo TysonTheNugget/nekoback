@@ -687,60 +687,75 @@ def cancel_wl_reservation():
 
 @app.route('/verify_and_store', methods=['POST'])
 def verify_and_store():
-    """
-    Called by client (public) or WL flow when you have a txId ready.
-    - Increments used_serials immediately (uniqueness enforced).
-    - For WL, blacklists the exact inscription id passed/reserved.
-    """
-    data = request.get_json(force=True)
-    txId = data.get('txId')
-    reservationId = data.get('reservationId')
-    body_inscription = data.get('inscriptionId')
-    if not txId or not reservationId:
-        return jsonify({"ok": False, "error": "Missing txId or reservationId"}), 400
-    resv_data = rz_get_json(f"resv:{reservationId}")
-    if not resv_data:
-        return jsonify({"ok": False, "error": "Invalid or expired reservation"}), 400
-    try:
-        resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
-        serial = resv.get("serial")
-        wl = bool(resv.get("wl", False))
-        resv_inscription = resv.get("inscriptionId")
-        chosen_inscription = body_inscription or resv_inscription
-        address = resv.get("address")
-    except Exception:
-        return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
-    if not tx_pays_app_fee(txId, wl=wl):
-        return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
-    try:
-        # OPTIONAL but recommended: enforce uniqueness by checking SADD result
-        added = rz_sadd("used_serials", serial)
-        if added != 1:
-            return jsonify({"ok": False, "error": "Serial already used"}), 400
-        rz_del(f"hold:{serial}")
-        rz_del(f"resv:{reservationId}")
-        # NEW: drop the serial->rid guard (done on success)
-        if serial:
-            rz_del(f"resv_for_serial:{serial}")
-        if wl and chosen_inscription:
-            sadded = rz_sadd("blacklisted_inscriptions", chosen_inscription)
-            logger.info(f"[VS] WL blacklisted {chosen_inscription} (SADD={sadded}) for tx {txId}")
-            if address:
-                rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
-        rz_hset_many(f"tx:{txId}", {
-            "serial": serial,
-            "wl": "1" if wl else "0"
-        })
-        return jsonify({
-            "ok": True,
-            "txId": txId,
-            "serial": serial,
-            "wl": wl,
-            "blacklistedInscription": chosen_inscription if wl else None
-        })
-    except Exception as e:
-        logger.error(f"[VS] verify_and_store error: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+    """
+    Called by client (public) or WL flow when you have a txId ready.
+    - Increments used_serials immediately (uniqueness enforced).
+    - For WL, blacklists the exact inscription id passed/reserved.
+    """
+    data = request.get_json(force=True)
+    txId = data.get('txId')
+    reservationId = data.get('reservationId')
+    body_inscription = data.get('inscriptionId')
+
+    if not txId or not reservationId:
+        return jsonify({"ok": False, "error": "Missing txId or reservationId"}), 400
+
+    resv_data = rz_get_json(f"resv:{reservationId}")
+    if not resv_data:
+        return jsonify({"ok": False, "error": "Invalid or expired reservation"}), 400
+
+    try:
+        resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
+        serial = resv.get("serial")
+        wl = bool(resv.get("wl", False))
+        resv_inscription = resv.get("inscriptionId")
+        chosen_inscription = body_inscription or resv_inscription
+        address = resv.get("address")
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
+
+    if not tx_pays_app_fee(txId, wl=wl):
+        return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
+
+    try:
+        # Enforce uniqueness by checking SADD result
+        added = rz_sadd("used_serials", serial)
+        if added != 1:
+            return jsonify({"ok": False, "error": "Serial already used"}), 400
+
+        # Clean up reservation / hold
+        rz_del(f"hold:{serial}")
+        rz_del(f"resv:{reservationId}")
+
+        # Drop the serial->rid guard (done on success)
+        if serial:
+            rz_del(f"resv_for_serial:{serial}")
+
+        # If WL, blacklist inscription
+        if wl and chosen_inscription:
+            sadded = rz_sadd("blacklisted_inscriptions", chosen_inscription)
+            logger.info(f"[VS] WL blacklisted {chosen_inscription} (SADD={sadded}) for tx {txId}")
+            if address:
+                rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
+
+        # Save tx metadata
+        rz_hset_many(f"tx:{txId}", {
+            "serial": serial,
+            "wl": "1" if wl else "0"
+        })
+
+        return jsonify({
+            "ok": True,
+            "txId": txId,
+            "serial": serial,
+            "wl": wl,
+            "blacklistedInscription": chosen_inscription if wl else None
+        })
+
+    except Exception as e:
+        logger.error(f"[VS] verify_and_store error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 # ---------- Admin ----------
 @app.route('/admin/rebuild_used_serials', methods=['GET', 'POST'])
