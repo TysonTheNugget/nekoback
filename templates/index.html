@@ -234,339 +234,339 @@
 </head>
 
 <body>
-  <div class="flyer-container" id="flyerContainer"></div>
   <div class="container">
     <header>
-      <h1>ねNEKOこ ねNEKOこ</h1>
-      <div class="tag">ねこねこ · Mint Page</div>
-      <div class="subtagline">Kawaii Bitcoin inscriptions — one purr at a time</div>
-      <div class="counter" id="supplyCounter">10,000 / 10,000</div>
+      <h1>🚧 Maintenance 🚧</h1>
+      <div class="tag">Under construction — BRB</div>
+      <div class="subtagline">Thanks for your patience!</div>
     </header>
-    <div>
-      <button id="claimWLButton" class="btn">Claim WL</button>
-      <button id="mintButton" class="btn" disabled>
-        <span class="btn-label">Mint</span>
-        <span id="mintEtaPill" class="pill">Neko</span>
-      </button>
-    </div>
-    <div class="image-wrap">
-      <div class="image-container">
-        <img id="randomImage" src="" alt="Neko">
-      </div>
-    </div>
-    <div id="addressDisplay"></div>
-    <div id="status"></div>
   </div>
-  <script>
-    // ===== Global state =====
-    let reservationId = null;
-    let reservedFilename = null;
-    let watchTimer = null;
-    let slideshowTimer = null;
-    let isWLReservation = false;
-    let wlInscriptionId = null;
-    const SLIDESHOW_MS = 5000;
-    window.ordinalAddress = null;
-    const $id = (x) => document.getElementById(x);
-    function setStatus(msg) { $id('status').textContent = msg || ''; }
+</body>
+<div>
+  <button id="claimWLButton" class="btn">Claim WL</button>
+  <button id="mintButton" class="btn" disabled>
+    <span class="btn-label">Mint</span>
+    <span id="mintEtaPill" class="pill">Neko</span>
+  </button>
+</div>
+<div class="image-wrap">
+  <div class="image-container">
+    <img id="randomImage" src="" alt="Neko">
+  </div>
+</div>
+<div id="addressDisplay"></div>
+<div id="status"></div>
+</div>
+<script>
+  // ===== Global state =====
+  let reservationId = null;
+  let reservedFilename = null;
+  let watchTimer = null;
+  let slideshowTimer = null;
+  let isWLReservation = false;
+  let wlInscriptionId = null;
+  const SLIDESHOW_MS = 5000;
+  window.ordinalAddress = null;
+  const $id = (x) => document.getElementById(x);
+  function setStatus(msg) { $id('status').textContent = msg || ''; }
 
 
 
 
-    function setStatusHTML(html) {
-      document.getElementById('status').innerHTML = html || '';
-    }
-    // ===== Supply / slideshow =====
-    async function refreshSupply() {
-      try {
-        const r = await fetch('/supply');
-        const j = await r.json();
-        const remaining = j.remaining ?? 0;
-        const total = j.total ?? 10000;
-        $id('supplyCounter').textContent = `${remaining.toLocaleString()} / ${total.toLocaleString()}`;
-      } catch { }
-    }
+  function setStatusHTML(html) {
+    document.getElementById('status').innerHTML = html || '';
+  }
+  // ===== Supply / slideshow =====
+  async function refreshSupply() {
+    try {
+      const r = await fetch('/supply');
+      const j = await r.json();
+      const remaining = j.remaining ?? 0;
+      const total = j.total ?? 10000;
+      $id('supplyCounter').textContent = `${remaining.toLocaleString()} / ${total.toLocaleString()}`;
+    } catch { }
+  }
 
-    function fadeSwapImage(newUrl) {
-      const img = $id('randomImage');
-      img.classList.remove('loaded');
-      const onLoad = () => { img.classList.add('loaded'); img.removeEventListener('load', onLoad); };
-      img.addEventListener('load', onLoad);
-      img.crossOrigin = 'anonymous';
-      img.src = newUrl;
-    }
+  function fadeSwapImage(newUrl) {
+    const img = $id('randomImage');
+    img.classList.remove('loaded');
+    const onLoad = () => { img.classList.add('loaded'); img.removeEventListener('load', onLoad); };
+    img.addEventListener('load', onLoad);
+    img.crossOrigin = 'anonymous';
+    img.src = newUrl;
+  }
 
-    async function slideshowTick() {
-      try {
-        const res = await fetch('/randomize', { method: 'POST' });
-        if (!res.ok) throw new Error('Randomize HTTP ' + res.status);
-        const response = await res.json();
-        if (response.imageUrl) fadeSwapImage(response.imageUrl);
-      } catch (_) { }
-    }
+  async function slideshowTick() {
+    try {
+      const res = await fetch('/randomize', { method: 'POST' });
+      if (!res.ok) throw new Error('Randomize HTTP ' + res.status);
+      const response = await res.json();
+      if (response.imageUrl) fadeSwapImage(response.imageUrl);
+    } catch (_) { }
+  }
 
-    function startSlideshow() {
-      if (slideshowTimer) clearInterval(slideshowTimer);
-      slideshowTimer = setInterval(slideshowTick, SLIDESHOW_MS);
-      slideshowTick();
-    }
+  function startSlideshow() {
+    if (slideshowTimer) clearInterval(slideshowTimer);
+    slideshowTimer = setInterval(slideshowTick, SLIDESHOW_MS);
+    slideshowTick();
+  }
 
-    // ===== Helper for base64 =====
-    async function getImageAsBase64(url) {
-      const res = await fetch(url, { cache: 'no-cache' });
-      const blob = await res.blob();
-      const buf = await blob.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let bin = '';
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      return btoa(bin);
-    }
+  // ===== Helper for base64 =====
+  async function getImageAsBase64(url) {
+    const res = await fetch(url, { cache: 'no-cache' });
+    const blob = await res.blob();
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
 
-    // ===== Reservation watcher =====
-    async function watchReservation() {
-      if (!reservationId) return;
-      try {
-        const r = await fetch('/reservation_status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reservationId })
-        });
-        const j = await r.json();
-        if (!j.ok) return;
-        if (!j.active) {
-          clearInterval(watchTimer); watchTimer = null;
-          setStatus('Reservation ended.');
-          return;
-        }
-        if (j.used) {
-          clearInterval(watchTimer); watchTimer = null;
-          setStatus(`Mint confirmed ✔${isWLReservation ? ' (WL)' : ''}`);
-          await refreshSupply();
-          return;
-        }
-      } catch (_) { }
-    }
-
-    // ===== Wallet connect and WL logic =====
-    function hasBitcoinProvider() {
-      if (typeof window.BitcoinProvider === 'undefined') {
-        setStatus('Please install Xverse (or a compatible Bitcoin wallet) and refresh.');
-        console.error('No BitcoinProvider found.');
-        return false;
+  // ===== Reservation watcher =====
+  async function watchReservation() {
+    if (!reservationId) return;
+    try {
+      const r = await fetch('/reservation_status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reservationId })
+      });
+      const j = await r.json();
+      if (!j.ok) return;
+      if (!j.active) {
+        clearInterval(watchTimer); watchTimer = null;
+        setStatus('Reservation ended.');
+        return;
       }
-      return true;
-    }
+      if (j.used) {
+        clearInterval(watchTimer); watchTimer = null;
+        setStatus(`Mint confirmed ✔${isWLReservation ? ' (WL)' : ''}`);
+        await refreshSupply();
+        return;
+      }
+    } catch (_) { }
+  }
 
-    async function connectWallet() {
-      if (!hasBitcoinProvider()) return;
-      try {
-        const response = await window.BitcoinProvider.request('getAccounts', {
-          purposes: ['ordinals'],
-          message: 'Connect to check whitelist eligibility',
-          network: { type: 'Mainnet' }
-        });
-        if (response && Array.isArray(response.result)) {
-          const addresses = response.result;
-          const ord = addresses.find(a => a.purpose === 'ordinals')?.address || null;
-          if (ord) {
-            window.ordinalAddress = ord;
-            $id('addressDisplay').innerHTML = `<strong>Ordinal Address:</strong> ${ord}`;
-            return ord;
-          } else {
-            setStatus('Failed to get Ordinal address from wallet.');
-            console.error('No ordinals address found:', response);
-            return null;
-          }
+  // ===== Wallet connect and WL logic =====
+  function hasBitcoinProvider() {
+    if (typeof window.BitcoinProvider === 'undefined') {
+      setStatus('Please install Xverse (or a compatible Bitcoin wallet) and refresh.');
+      console.error('No BitcoinProvider found.');
+      return false;
+    }
+    return true;
+  }
+
+  async function connectWallet() {
+    if (!hasBitcoinProvider()) return;
+    try {
+      const response = await window.BitcoinProvider.request('getAccounts', {
+        purposes: ['ordinals'],
+        message: 'Connect to check whitelist eligibility',
+        network: { type: 'Mainnet' }
+      });
+      if (response && Array.isArray(response.result)) {
+        const addresses = response.result;
+        const ord = addresses.find(a => a.purpose === 'ordinals')?.address || null;
+        if (ord) {
+          window.ordinalAddress = ord;
+          $id('addressDisplay').innerHTML = `<strong>Ordinal Address:</strong> ${ord}`;
+          return ord;
         } else {
-          setStatus('Invalid response from wallet.');
-          console.error('Invalid getAccounts response:', response);
+          setStatus('Failed to get Ordinal address from wallet.');
+          console.error('No ordinals address found:', response);
           return null;
         }
-      } catch (err) {
-        console.error(err);
-        setStatus('Error connecting: ' + (err?.message || 'Unknown error'));
+      } else {
+        setStatus('Invalid response from wallet.');
+        console.error('Invalid getAccounts response:', response);
         return null;
       }
+    } catch (err) {
+      console.error(err);
+      setStatus('Error connecting: ' + (err?.message || 'Unknown error'));
+      return null;
     }
+  }
 
-    async function claimWL() {
-      const btn = $id('claimWLButton');
-      btn.disabled = true;
-      $id('mintButton').disabled = true;
-      setStatus('Connecting wallet…');
-      const address = await connectWallet();
-      if (!address) {
+  async function claimWL() {
+    const btn = $id('claimWLButton');
+    btn.disabled = true;
+    $id('mintButton').disabled = true;
+    setStatus('Connecting wallet…');
+    const address = await connectWallet();
+    if (!address) {
+      btn.disabled = false;
+      $id('mintButton').disabled = false;
+      return;
+    }
+    setStatus('Checking whitelist eligibility…');
+    try {
+      const res = await fetch('/check_wl_eligibility', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address })
+      });
+      const data = await res.json();
+      if (!data.ok || !data.eligible) {
+        setStatus(data.error || 'Not eligible for whitelist.');
         btn.disabled = false;
         $id('mintButton').disabled = false;
         return;
       }
-      setStatus('Checking whitelist eligibility…');
-      try {
-        const res = await fetch('/check_wl_eligibility', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address })
-        });
-        const data = await res.json();
-        if (!data.ok || !data.eligible) {
-          setStatus(data.error || 'Not eligible for whitelist.');
-          btn.disabled = false;
-          $id('mintButton').disabled = false;
-          return;
-        }
-        // Select first valid inscription
-        const inscriptionId = data.inscriptions[0];
-        setStatus('Claiming whitelist spot…');
-        const claimRes = await fetch('/claim_wl', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
-          body: JSON.stringify({ address, inscriptionId })
-        });
-        const claim = await claimRes.json();
-        if (claim.error && claim.error.includes("Another WL mint is in progress")) {
-          setStatus("Another WL mint is in progress. Please wait up to 15 minutes.");
-          btn.disabled = false;
-          $id('mintButton').disabled = false;
-          return;
-        }
-        if (claim.error && claim.error.includes("Inscription temporarily locked")) {
-          setStatus("Inscription locked. Please wait up to 15 minutes.");
-          btn.disabled = false;
-          $id('mintButton').disabled = false;
-          return;
-        }
-        if (!claim.ok) {
-          setStatus(claim.error || 'Failed to claim whitelist spot.');
-          btn.disabled = false;
-          $id('mintButton').disabled = false;
-          return;
-        }
-        reservationId = claim.reservationId;
-        reservedFilename = claim.filename;
-        wlInscriptionId = claim.inscriptionId;
-        isWLReservation = true;
-        fadeSwapImage(claim.imageUrl);
-        if (watchTimer) clearInterval(watchTimer);
-        watchTimer = setInterval(watchReservation, 5_000);
-        setStatus('Whitelist spot reserved! Waiting for mint confirmation (this may take up to 15 minutes)...');
-        const prepRes = await fetch('/prepare_wl_inscription', { method: 'POST' });
-        const prep = await prepRes.json();
-        if (!prep.appFeeAddress || !prep.appFee) {
-          setStatus('Server missing WL fee config');
-          btn.disabled = false;
-          $id('mintButton').disabled = false;
-          reservationId = null;
-          reservedFilename = null;
-          wlInscriptionId = null;
-          isWLReservation = false;
-          return;
-        }
-        const base64Image = await getImageAsBase64(`/file/${reservedFilename}`);
-        await window.SatsConnect.createInscription({
-          payload: {
-            network: { type: prep.network || 'Mainnet' },
-            contentType: 'image/png',
-            content: base64Image,
-            payloadType: 'BASE_64',
-            appFeeAddress: prep.appFeeAddress,
-            appFee: prep.appFee
-          },
-          onFinish: () => { }, // Ignore due to Sats-Connect unreliability
-          onCancel: () => { }  // Ignore to prevent premature cancellation
-        });
+      // Select first valid inscription
+      const inscriptionId = data.inscriptions[0];
+      setStatus('Claiming whitelist spot…');
+      const claimRes = await fetch('/claim_wl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
+        body: JSON.stringify({ address, inscriptionId })
+      });
+      const claim = await claimRes.json();
+      if (claim.error && claim.error.includes("Another WL mint is in progress")) {
+        setStatus("Another WL mint is in progress. Please wait up to 15 minutes.");
         btn.disabled = false;
         $id('mintButton').disabled = false;
-      } catch (err) {
-        console.error(err);
-        setStatus('Error during WL claim: ' + (err.message || 'Unknown error'));
+        return;
+      }
+      if (claim.error && claim.error.includes("Inscription temporarily locked")) {
+        setStatus("Inscription locked. Please wait up to 15 minutes.");
         btn.disabled = false;
         $id('mintButton').disabled = false;
-        if (reservationId && reservedFilename && window.ordinalAddress && wlInscriptionId) {
-          fetch('/cancel_wl_reservation', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reservationId, filename: reservedFilename, address: window.ordinalAddress, inscriptionId: wlInscriptionId })
-          });
-        }
+        return;
+      }
+      if (!claim.ok) {
+        setStatus(claim.error || 'Failed to claim whitelist spot.');
+        btn.disabled = false;
+        $id('mintButton').disabled = false;
+        return;
+      }
+      reservationId = claim.reservationId;
+      reservedFilename = claim.filename;
+      wlInscriptionId = claim.inscriptionId;
+      isWLReservation = true;
+      fadeSwapImage(claim.imageUrl);
+      if (watchTimer) clearInterval(watchTimer);
+      watchTimer = setInterval(watchReservation, 5_000);
+      setStatus('Whitelist spot reserved! Waiting for mint confirmation (this may take up to 15 minutes)...');
+      const prepRes = await fetch('/prepare_wl_inscription', { method: 'POST' });
+      const prep = await prepRes.json();
+      if (!prep.appFeeAddress || !prep.appFee) {
+        setStatus('Server missing WL fee config');
+        btn.disabled = false;
+        $id('mintButton').disabled = false;
         reservationId = null;
         reservedFilename = null;
         wlInscriptionId = null;
         isWLReservation = false;
+        return;
       }
-    }
-
-
-    // ===== Mint flow (unchanged for regular mint) =====
-    async function startMintFlow() {
-      const btn = $id('mintButton');
-      try {
-        setStatus('Picking a random Neko…');
-        const randRes = await fetch('/randomize', { method: 'POST' });
-        if (!randRes.ok) throw new Error('Randomize HTTP ' + randRes.status);
-        const rand = await randRes.json();
-        const filename = rand?.imageInfo?.background;
-        const randomizedUrl = rand?.imageUrl;
-        if (!filename) throw new Error('Randomize did not return a filename');
-        setStatus('Reserving your Neko…');
-        const holdRes = await fetch('/reserve_for_image', {
+      const base64Image = await getImageAsBase64(`/file/${reservedFilename}`);
+      await window.SatsConnect.createInscription({
+        payload: {
+          network: { type: prep.network || 'Mainnet' },
+          contentType: 'image/png',
+          content: base64Image,
+          payloadType: 'BASE_64',
+          appFeeAddress: prep.appFeeAddress,
+          appFee: prep.appFee
+        },
+        onFinish: () => { }, // Ignore due to Sats-Connect unreliability
+        onCancel: () => { }  // Ignore to prevent premature cancellation
+      });
+      btn.disabled = false;
+      $id('mintButton').disabled = false;
+    } catch (err) {
+      console.error(err);
+      setStatus('Error during WL claim: ' + (err.message || 'Unknown error'));
+      btn.disabled = false;
+      $id('mintButton').disabled = false;
+      if (reservationId && reservedFilename && window.ordinalAddress && wlInscriptionId) {
+        fetch('/cancel_wl_reservation', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
-          body: JSON.stringify({ filename })
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reservationId, filename: reservedFilename, address: window.ordinalAddress, inscriptionId: wlInscriptionId })
         });
-        const hold = await holdRes.json();
-        if (!hold.ok) throw new Error(hold.error || 'Reserve failed');
-        reservationId = hold.reservationId;
-        reservedFilename = hold.filename || filename;
-        const reservedUrl = hold.imageUrl || randomizedUrl;
-        isWLReservation = false;
-        if (watchTimer) clearInterval(watchTimer);
-        watchTimer = setInterval(watchReservation, 5_000);
-        await refreshSupply();
-        setStatus('Preparing inscription…');
-        const prepRes = await fetch('/prepare_inscription', { method: 'POST' });
-        const prep = await prepRes.json();
-        if (!prep.appFeeAddress || !prep.appFee) throw new Error('Server missing app fee config');
-        if (!window.SatsConnect || typeof window.SatsConnect.createInscription !== 'function') {
-          setStatus('Sats-Connect not available. Check sats-connect-bundle.js.');
-          btn.disabled = false; return;
-        }
-        if (!reservedUrl) throw new Error('Reserved image URL missing');
-        const base64Image = await getImageAsBase64(reservedUrl);
-        setStatus('Opening wallet…');
-        await window.SatsConnect.createInscription({
-          payload: {
-            network: { type: prep.network || 'Mainnet' },
-            contentType: 'image/png',
-            content: base64Image,
-            payloadType: 'BASE_64',
-            appFeeAddress: prep.appFeeAddress,
-            appFee: prep.appFee
-          },
-          onFinish: async (resp) => {
-            const id =
-              resp?.txId || resp?.txid || resp?.revealTxId || resp?.commitTxId ||
-              (Array.isArray(resp?.txIds) ? resp.txIds[0] : null) ||
-              (resp?.result && (resp.result.txId || resp.result.txid));
-            if (!id) { setStatus('Wallet returned no txid.'); btn.disabled = false; return; }
-            $id('addressDisplay').innerHTML += `<div><strong>Transaction ID:</strong> ${id}</div>`;
-            setStatus('Verifying payment…');
-            const verifyRes = await fetch('/verify_and_store', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ txId: id, reservationId, filename: reservedFilename })
-            });
-            const verify = await verifyRes.json();
-            if (verify.ok) {
-              setStatus('Verified ✔');
-              await refreshSupply();
-            } else {
-              setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
-            }
-            btn.disabled = false;
-          },
-          onCancel: () => {
-            setStatusHTML(
-              `Confirming..ฅ^•ﻌ•^ฅ Please Wait<br>
+      }
+      reservationId = null;
+      reservedFilename = null;
+      wlInscriptionId = null;
+      isWLReservation = false;
+    }
+  }
+
+
+  // ===== Mint flow (unchanged for regular mint) =====
+  async function startMintFlow() {
+    const btn = $id('mintButton');
+    try {
+      setStatus('Picking a random Neko…');
+      const randRes = await fetch('/randomize', { method: 'POST' });
+      if (!randRes.ok) throw new Error('Randomize HTTP ' + randRes.status);
+      const rand = await randRes.json();
+      const filename = rand?.imageInfo?.background;
+      const randomizedUrl = rand?.imageUrl;
+      if (!filename) throw new Error('Randomize did not return a filename');
+      setStatus('Reserving your Neko…');
+      const holdRes = await fetch('/reserve_for_image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Id': crypto.randomUUID() },
+        body: JSON.stringify({ filename })
+      });
+      const hold = await holdRes.json();
+      if (!hold.ok) throw new Error(hold.error || 'Reserve failed');
+      reservationId = hold.reservationId;
+      reservedFilename = hold.filename || filename;
+      const reservedUrl = hold.imageUrl || randomizedUrl;
+      isWLReservation = false;
+      if (watchTimer) clearInterval(watchTimer);
+      watchTimer = setInterval(watchReservation, 5_000);
+      await refreshSupply();
+      setStatus('Preparing inscription…');
+      const prepRes = await fetch('/prepare_inscription', { method: 'POST' });
+      const prep = await prepRes.json();
+      if (!prep.appFeeAddress || !prep.appFee) throw new Error('Server missing app fee config');
+      if (!window.SatsConnect || typeof window.SatsConnect.createInscription !== 'function') {
+        setStatus('Sats-Connect not available. Check sats-connect-bundle.js.');
+        btn.disabled = false; return;
+      }
+      if (!reservedUrl) throw new Error('Reserved image URL missing');
+      const base64Image = await getImageAsBase64(reservedUrl);
+      setStatus('Opening wallet…');
+      await window.SatsConnect.createInscription({
+        payload: {
+          network: { type: prep.network || 'Mainnet' },
+          contentType: 'image/png',
+          content: base64Image,
+          payloadType: 'BASE_64',
+          appFeeAddress: prep.appFeeAddress,
+          appFee: prep.appFee
+        },
+        onFinish: async (resp) => {
+          const id =
+            resp?.txId || resp?.txid || resp?.revealTxId || resp?.commitTxId ||
+            (Array.isArray(resp?.txIds) ? resp.txIds[0] : null) ||
+            (resp?.result && (resp.result.txId || resp.result.txid));
+          if (!id) { setStatus('Wallet returned no txid.'); btn.disabled = false; return; }
+          $id('addressDisplay').innerHTML += `<div><strong>Transaction ID:</strong> ${id}</div>`;
+          setStatus('Verifying payment…');
+          const verifyRes = await fetch('/verify_and_store', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ txId: id, reservationId, filename: reservedFilename })
+          });
+          const verify = await verifyRes.json();
+          if (verify.ok) {
+            setStatus('Verified ✔');
+            await refreshSupply();
+          } else {
+            setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
+          }
+          btn.disabled = false;
+        },
+        onCancel: () => {
+          setStatusHTML(
+            `Confirming..ฅ^•ﻌ•^ฅ Please Wait<br>
      <a href="https://x.com/nekonekobtc" target="_blank" rel="noopener noreferrer" style="
        display:inline-flex;
        align-items:center;
@@ -585,189 +585,189 @@
        </svg>
        Follow on X
      </a>`
-            );
-            btn.disabled = false;
-          }
-        });
-      } catch (err) {
-        console.error(err);
-        setStatus(err.message || 'Error during mint.');
-        $id('mintButton').disabled = false;
-      }
+          );
+          btn.disabled = false;
+        }
+      });
+    } catch (err) {
+      console.error(err);
+      setStatus(err.message || 'Error during mint.');
+      $id('mintButton').disabled = false;
     }
+  }
 
-    async function verifyMint(txId) {
-      console.log('[WL] Verifying txId:', txId);
-      $id('addressDisplay').innerHTML += `<div><strong>Transaction ID:</strong> ${txId}</div>`;
-      setStatus('Verifying WL payment…');
-      const verifyRes = await fetch('/verify_and_store', {
+  async function verifyMint(txId) {
+    console.log('[WL] Verifying txId:', txId);
+    $id('addressDisplay').innerHTML += `<div><strong>Transaction ID:</strong> ${txId}</div>`;
+    setStatus('Verifying WL payment…');
+    const verifyRes = await fetch('/verify_and_store', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txId, reservationId, filename: reservedFilename, address: window.ordinalAddress })
+    });
+    const verifyText = await verifyRes.text();
+    console.log('[WL] verify_and_store response:', verifyText);
+    let verify;
+    try {
+      verify = JSON.parse(verifyText);
+    } catch (e) {
+      console.log('[WL] Invalid JSON from verify_and_store:', verifyText);
+      setStatus('Verification failed: Invalid server response');
+      return;
+    }
+    if (verify.ok) {
+      setStatus('WL Mint verified ✔');
+      if (verify.blacklistedInscription) {
+        $id('addressDisplay').innerHTML += `<div><strong>Used WL Inscription:</strong> ${verify.blacklistedInscription}</div>`;
+      }
+      await refreshSupply();
+      const eligibilityRes = await fetch('/check_wl_eligibility', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ txId, reservationId, filename: reservedFilename, address: window.ordinalAddress })
+        body: JSON.stringify({ address: window.ordinalAddress })
       });
-      const verifyText = await verifyRes.text();
-      console.log('[WL] verify_and_store response:', verifyText);
-      let verify;
-      try {
-        verify = JSON.parse(verifyText);
-      } catch (e) {
-        console.log('[WL] Invalid JSON from verify_and_store:', verifyText);
-        setStatus('Verification failed: Invalid server response');
-        return;
-      }
-      if (verify.ok) {
-        setStatus('WL Mint verified ✔');
-        if (verify.blacklistedInscription) {
-          $id('addressDisplay').innerHTML += `<div><strong>Used WL Inscription:</strong> ${verify.blacklistedInscription}</div>`;
-        }
-        await refreshSupply();
-        const eligibilityRes = await fetch('/check_wl_eligibility', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: window.ordinalAddress })
-        });
-        const eligibility = await eligibilityRes.json();
-        console.log('[WL] Post-mint eligibility:', eligibility);
-        if (eligibility.ok && eligibility.eligible) {
-          $id('addressDisplay').innerHTML += `<div><strong>Remaining WL Inscriptions:</strong> ${eligibility.inscriptions.length}</div>`;
-        } else {
-          $id('addressDisplay').innerHTML += `<div><strong>Remaining WL Inscriptions:</strong> 0</div>`;
-        }
+      const eligibility = await eligibilityRes.json();
+      console.log('[WL] Post-mint eligibility:', eligibility);
+      if (eligibility.ok && eligibility.eligible) {
+        $id('addressDisplay').innerHTML += `<div><strong>Remaining WL Inscriptions:</strong> ${eligibility.inscriptions.length}</div>`;
       } else {
-        console.log('[WL] Verification failed:', verify);
-        setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
+        $id('addressDisplay').innerHTML += `<div><strong>Remaining WL Inscriptions:</strong> 0</div>`;
+      }
+    } else {
+      console.log('[WL] Verification failed:', verify);
+      setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
+    }
+  }
+
+  // ===== Pixel flyers =====
+  async function createFlyers() {
+    const container = $id('flyerContainer');
+    const images = Array.from({ length: 8 }, (_, i) => `static/flyers/${i + 1}.png`);
+    const scaleFactor = 4;
+    for (const src of images) {
+      try {
+        const img = new Image();
+        img.src = src;
+        img.crossOrigin = 'anonymous';
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = () => reject(new Error('Failed to load ' + src));
+        });
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 32 * scaleFactor; canvas.height = 32 * scaleFactor;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const flyerImg = document.createElement('img');
+        flyerImg.src = canvas.toDataURL('image/png');
+        flyerImg.className = 'flyer';
+        flyerImg.style.top = `${Math.random() * (window.innerHeight - 120)}px`;
+        flyerImg.style.setProperty('--y', `${(Math.random() * 40 - 20)}px`);
+        flyerImg.style.animationDelay = `${Math.random() * 12}s`;
+        container.appendChild(flyerImg);
+      } catch (err) { console.error(err); }
+    }
+  }
+
+  // ===== Init =====
+  document.addEventListener('DOMContentLoaded', () => {
+    $id('claimWLButton').addEventListener('click', claimWL);
+    $id('mintButton').addEventListener('click', startMintFlow);
+    startSlideshow();
+    refreshSupply();
+    setInterval(refreshSupply, 15000);
+    createFlyers();
+  });
+
+
+  (async function setupPublicMintCountdownOnButton() {
+    const btn = document.getElementById('mintButton');
+    const pill = document.getElementById('mintEtaPill');
+
+    // Guard: if elements missing, bail silently
+    if (!btn || !pill) return;
+
+    async function fetchConfig() {
+      try {
+        const r = await fetch('/config', { cache: 'no-store' });
+        if (!r.ok) throw new Error('config http ' + r.status);
+        return await r.json();
+      } catch {
+        // If config fails, assume open so users aren’t blocked by frontend
+        return { now: Math.floor(Date.now() / 1000), publicMintStartTs: 0, publicMintOpen: true };
       }
     }
 
-    // ===== Pixel flyers =====
-    async function createFlyers() {
-      const container = $id('flyerContainer');
-      const images = Array.from({ length: 8 }, (_, i) => `static/flyers/${i + 1}.png`);
-      const scaleFactor = 4;
-      for (const src of images) {
-        try {
-          const img = new Image();
-          img.src = src;
-          img.crossOrigin = 'anonymous';
-          await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = () => reject(new Error('Failed to load ' + src));
-          });
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          canvas.width = 32 * scaleFactor; canvas.height = 32 * scaleFactor;
-          ctx.imageSmoothingEnabled = false;
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          const flyerImg = document.createElement('img');
-          flyerImg.src = canvas.toDataURL('image/png');
-          flyerImg.className = 'flyer';
-          flyerImg.style.top = `${Math.random() * (window.innerHeight - 120)}px`;
-          flyerImg.style.setProperty('--y', `${(Math.random() * 40 - 20)}px`);
-          flyerImg.style.animationDelay = `${Math.random() * 12}s`;
-          container.appendChild(flyerImg);
-        } catch (err) { console.error(err); }
-      }
+    function formatETA(seconds) {
+      if (seconds <= 0) return "Opening…";
+      const d = Math.floor(seconds / 86400);
+      seconds %= 86400;
+      const h = Math.floor(seconds / 3600);
+      seconds %= 3600;
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      const parts = [];
+      if (d) parts.push(`${d}d`);
+      if (h) parts.push(`${h}h`);
+      if (m) parts.push(`${m}m`);
+      parts.push(`${s}s`);
+      return parts.join(" ");
     }
 
-    // ===== Init =====
-    document.addEventListener('DOMContentLoaded', () => {
-      $id('claimWLButton').addEventListener('click', claimWL);
-      $id('mintButton').addEventListener('click', startMintFlow);
-      startSlideshow();
-      refreshSupply();
-      setInterval(refreshSupply, 15000);
-      createFlyers();
-    });
+    function lockButton() {
+      btn.disabled = true;
+      btn.classList.add('opacity-60');
+      btn.classList.add('pointer-events-none');
+      pill.classList.add('show');
+    }
 
+    function unlockButton() {
+      btn.disabled = false;
+      btn.classList.remove('opacity-60', 'pointer-events-none');
+      pill.classList.remove('show');
+    }
 
-    (async function setupPublicMintCountdownOnButton() {
-      const btn = document.getElementById('mintButton');
-      const pill = document.getElementById('mintEtaPill');
+    // Initial config
+    const cfg = await fetchConfig();
+    const startTs = Number(cfg.publicMintStartTs || 0);
 
-      // Guard: if elements missing, bail silently
-      if (!btn || !pill) return;
+    // If already open (or no start set), just unlock and hide pill
+    if (cfg.publicMintOpen || !startTs) {
+      unlockButton();
+      return;
+    }
 
-      async function fetchConfig() {
-        try {
-          const r = await fetch('/config', { cache: 'no-store' });
-          if (!r.ok) throw new Error('config http ' + r.status);
-          return await r.json();
-        } catch {
-          // If config fails, assume open so users aren’t blocked by frontend
-          return { now: Math.floor(Date.now() / 1000), publicMintStartTs: 0, publicMintOpen: true };
-        }
-      }
+    // Keep locked and update ETA using server time as baseline
+    lockButton();
+    let serverNow = Number(cfg.now || Math.floor(Date.now() / 1000));
 
-      function formatETA(seconds) {
-        if (seconds <= 0) return "Opening…";
-        const d = Math.floor(seconds / 86400);
-        seconds %= 86400;
-        const h = Math.floor(seconds / 3600);
-        seconds %= 3600;
-        const m = Math.floor(seconds / 60);
-        const s = seconds % 60;
-        const parts = [];
-        if (d) parts.push(`${d}d`);
-        if (h) parts.push(`${h}h`);
-        if (m) parts.push(`${m}m`);
-        parts.push(`${s}s`);
-        return parts.join(" ");
-      }
-
-      function lockButton() {
-        btn.disabled = true;
-        btn.classList.add('opacity-60');
-        btn.classList.add('pointer-events-none');
-        pill.classList.add('show');
-      }
-
-      function unlockButton() {
-        btn.disabled = false;
-        btn.classList.remove('opacity-60', 'pointer-events-none');
-        pill.classList.remove('show');
-      }
-
-      // Initial config
-      const cfg = await fetchConfig();
-      const startTs = Number(cfg.publicMintStartTs || 0);
-
-      // If already open (or no start set), just unlock and hide pill
-      if (cfg.publicMintOpen || !startTs) {
+    function tick() {
+      const remaining = startTs - serverNow;
+      if (remaining <= 0) {
         unlockButton();
+        document.querySelector('#mintButton .btn-label').textContent = "Mint"; // 👈 force label
+        pill.style.display = "none"; // 👈 hide the countdown pill
+        clearInterval(timer);
         return;
       }
+      pill.textContent = `Opens in ${formatETA(remaining)}`;
+      serverNow += 1;
+    }
 
-      // Keep locked and update ETA using server time as baseline
-      lockButton();
-      let serverNow = Number(cfg.now || Math.floor(Date.now() / 1000));
+    // Start ticking
+    tick();
+    const timer = setInterval(tick, 1000);
 
-      function tick() {
-        const remaining = startTs - serverNow;
-        if (remaining <= 0) {
-          unlockButton();
-          document.querySelector('#mintButton .btn-label').textContent = "Mint"; // 👈 force label
-          pill.style.display = "none"; // 👈 hide the countdown pill
-          clearInterval(timer);
-          return;
-        }
-        pill.textContent = `Opens in ${formatETA(remaining)}`;
-        serverNow += 1;
-      }
-
-      // Start ticking
-      tick();
-      const timer = setInterval(tick, 1000);
-
-      // Re-sync server time every minute (handles tab sleep/lag)
-      setInterval(async () => {
-        try {
-          const fresh = await fetchConfig();
-          if (fresh.publicMintOpen) { unlockButton(); clearInterval(timer); }
-          else if (typeof fresh.now === 'number') serverNow = fresh.now;
-        } catch { }
-      }, 60000);
-    })();
-  </script>
+    // Re-sync server time every minute (handles tab sleep/lag)
+    setInterval(async () => {
+      try {
+        const fresh = await fetchConfig();
+        if (fresh.publicMintOpen) { unlockButton(); clearInterval(timer); }
+        else if (typeof fresh.now === 'number') serverNow = fresh.now;
+      } catch { }
+    }, 60000);
+  })();
+</script>
 </body>
 
 </html>
