@@ -210,11 +210,11 @@ def is_serial_used(serial: str) -> bool:
 def is_serial_on_hold(serial: str) -> bool:
     return rz_exists(f"hold:{serial}")
 
-def try_hold_serial(serial: str, holder_id: str, ttl=900) -> bool:
+def try_hold_serial(serial: str, holder_id: str, ttl=1800) -> bool:
     payload = json.dumps({"holder": holder_id, "ts": int(time.time()), "exp": int(time.time()) + ttl})
     return rz_setex_nx(f"hold:{serial}", payload, ttl)
 
-def create_reservation_id(serial: str, ttl=900, wl=False, inscription_id=None, address=None) -> str:
+def create_reservation_id(serial: str, ttl=1800, wl=False, inscription_id=None, address=None) -> str:
     rid = str(uuid.uuid4())
     payload = {"serial": serial, "wl": bool(wl)}
     if inscription_id:
@@ -726,7 +726,7 @@ def verify_and_store():
         return jsonify({"ok": False, "error": "Missing serial"}), 400
 
     if not tx_pays_app_fee(txId, wl=wl):
-        return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
+        return jsonify({"ok": False, "error": "Awaiting confirmation ฅ^•ﻌ•^ฅ"}), 400
 
     try:
         added = rz_sadd("used_serials", serial)
