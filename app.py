@@ -65,17 +65,15 @@ def require_hcaptcha(view):
         if not HCAPTCHA_ENABLED:
             return view(*args, **kwargs)
 
-        # Bypass for slideshow requests to /randomize
-        if request.endpoint == 'randomize_image' and request.args.get('mode') == 'slideshow':
-            return view(*args, **kwargs)
-
+        # Accept token via header, JSON body, query, or form — whichever you prefer on the client
         token = (
             request.headers.get("X-hcaptcha-Token")
             or (request.is_json and (request.get_json(silent=True) or {}).get("h_captcha_token"))
             or request.args.get("h-captcha-response")
             or request.form.get("h-captcha-response")
         )
-        ok, detail = verify_hcaptcha(token, remoteip=request.remote_addr)
+
+        ok, detail = verify_hcaptcha(token)
         if not ok:
             return jsonify({"ok": False, "error": "hcaptcha_failed", "detail": detail}), 429
         return view(*args, **kwargs)
@@ -226,25 +224,6 @@ def rate_limit(key_prefix="rate:", limit=10, window=60):
             return func(*args, **kwargs)
         return wrapped
     return decorator
-    
-def rate_limit_randomize(func):
-    @wraps(func)
-    def wrapped(*args, **kwargs):
-        # No rate-limit for slideshow mode
-        if request.args.get('mode') == 'slideshow':
-            return func(*args, **kwargs)
-
-        # Otherwise: same logic as rate_limit(limit=5, window=60)
-        ip = request.remote_addr
-        key = f"rate:{ip}:{func.__name__}"
-        count = rz_get(f"/incr/{key}")
-        if count == 1:
-            rz_setex(key, count, 60)  # 60s window
-        if count > 5:
-            logger.warning(f"[Rate Limit] Blocked {ip} on {func.__name__} (count={count})")
-            return jsonify({"ok": False, "error": "Rate limit exceeded. Try again later."}), 429
-        return func(*args, **kwargs)
-    return wrapped
 
 # ---------- helpers ----------
 def sign_data(payload: str) -> str:
@@ -327,15 +306,6 @@ def pick_available_filename(preferred_fname=None, max_attempts=100):
             continue
         return fname, serial
     raise RuntimeError("No available images to reserve")
-    
-def pick_any_filename_for_slideshow():
-    """Return a random filename for slideshow without reserving/locking."""
-    files = [f for f in os.listdir("static/") if f.lower().endswith(".png")]
-    if not files:
-        raise RuntimeError("No slideshow images available")
-    fname = random.choice(files)
-    serial = os.path.splitext(fname)[0]  # derive serial from filename
-    return fname, serial
 
 # ---------- WL helpers ----------
 def load_wl_inscriptions():
@@ -566,7 +536,7 @@ def wl_finalize_from_scanner(max_items: int = 60):
 @app.route('/', endpoint='index')
 @rate_limit(limit=10, window=60)
 def index():
-    return render_template('index.html', HCAPTCHA_SITE_KEY=HCAPTCHA_SITE_KEY)
+    return render_template('index.html')
 
 @app.route('/reservation_status', methods=['POST'], endpoint='reservation_status')
 @rate_limit(limit=5, window=60)
@@ -623,21 +593,13 @@ def admin_set_public_mint():
     return jsonify({"ok": True, "publicMintStartTs": start_ts, "publicMintOpen": forced_open})
 
 @app.route('/randomize', methods=['POST'], endpoint='randomize_image')
-@rate_limit_randomize
 @require_hcaptcha
 def randomize_image():
     try:
-        if request.args.get('mode') == 'slideshow':
-            # Do NOT reserve/hold for slideshow; just show any image
-            fname = pick_any_filename_for_slideshow()
-        else:
-            # Mint flow—respect availability + reservations
-            fname, serial = pick_available_filename()
-
+        fname, serial = pick_available_filename()
         image_info = {'background': fname, 'serial': serial, 'fightCode': ''}
         return jsonify({'imageUrl': f"/file/{fname}", 'imageInfo': image_info})
     except Exception as e:
-        logger.exception("[randomize] error")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/reserve_for_image', methods=['POST'], endpoint='reserve_for_image')
