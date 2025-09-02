@@ -8,7 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from cachetools import TTLCache
 import asyncio
 import logging
-
+from datetime import datetime
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ def _rz_result(payload):
 def rz_get(path):
     r = requests.get(f"{UPSTASH_URL}{path}",
                      headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
-                     timeout=30)  # Increased timeout
+                     timeout=60)  # Increased timeout
     r.raise_for_status()
     return _rz_result(r.json())
 
@@ -63,7 +63,7 @@ def rz_post_pipeline(cmds):
                       headers={"Authorization": f"Bearer {UPSTASH_TOKEN}",
                                "Content-Type": "application/json"},
                       data=json.dumps(cmds),
-                      timeout=30)  # Increased timeout
+                      timeout=60)  # Increased timeout
     r.raise_for_status()
     data = r.json()
     return [_rz_result(item) for item in data]
@@ -128,7 +128,7 @@ def scan_keys(match_pattern="tx:*", count=1000):
         url = f"{UPSTASH_URL}/scan/{cursor}?count={count}"
         if match_pattern:
             url += f"&match={match_pattern}"
-        r = requests.get(url, headers=headers, timeout=30)  # Increased timeout
+        r = requests.get(url, headers=headers, timeout=60)  # Increased timeout
         r.raise_for_status()
         data = r.json()
         if isinstance(data, dict) and "result" in data:
@@ -167,6 +167,23 @@ def rz_ttl(key: str) -> int:
         return int(res)
     except Exception:
         return -2
+        
+from datetime import datetime
+
+def rate_limit(key_prefix="rate:", limit=10, window=60):
+    def decorator(func):
+        def wrapped(*args, **kwargs):
+            ip = request.remote_addr
+            key = f"{key_prefix}{ip}:{func.__name__}"
+            count = rz_get(f"/incr/{key}")
+            if count == 1:
+                rz_setex(key, count, window)  # Set expiration on first incr
+            if count > limit:
+                logger.warning(f"[Rate Limit] Blocked {ip} on {func.__name__} (count={count})")
+                return jsonify({"ok": False, "error": "Rate limit exceeded. Try again later."}), 429
+            return func(*args, **kwargs)
+        return wrapped
+    return decorator
 
 # ---------- helpers ----------
 def sign_data(payload: str) -> str:
@@ -184,7 +201,7 @@ def extract_serial_from_filename(fname: str):
 
 def fetch_tx_outputs(txid: str):
     base = "https://blockstream.info/api" if BITCOIN_NETWORK.lower() == "mainnet" else "https://blockstream.info/testnet/api"
-    r = requests.get(f"{base}/tx/{txid}", timeout=30)  # Increased timeout
+    r = requests.get(f"{base}/tx/{txid}", timeout=60)  # Increased timeout
     r.raise_for_status()
     j = r.json()
     outs = []
@@ -305,7 +322,7 @@ def fetch_wallet_inscriptions(address: str):
     try:
         while True:
             url = f"{base}?address={urllib.parse.quote(address)}&limit={limit}&offset={offset}"
-            r = session.get(url, headers=headers, timeout=30)
+            r = session.get(url, headers=headers, timeout=60)
             if r.status_code == 400 and "limit must be" in (r.text or ""):
                 if limit > 60:
                     limit = 60
@@ -481,6 +498,7 @@ def index():
     return render_template('index.html')
 
 @app.route('/reservation_status', methods=['POST'])
+@rate_limit(limit=5, window=60)
 def reservation_status():
     data = request.get_json(force=True) or {}
     rid = data.get('reservationId')
@@ -500,6 +518,7 @@ def reservation_status():
     return jsonify({"ok": True, "active": True, "serial": serial, "used": used, "ttl": ttl, "wl": wl})
 
 @app.route('/file/<path:fname>')
+@rate_limit(limit=10, window=60)
 def serve_original(fname):
     path = os.path.join(SINGLES_DIR, fname)
     return send_file(path, mimetype='image/png', as_attachment=False)
@@ -532,6 +551,7 @@ def admin_set_public_mint():
     return jsonify({"ok": True, "publicMintStartTs": start_ts, "publicMintOpen": forced_open})
 
 @app.route('/randomize', methods=['POST'])
+@rate_limit(limit=5, window=60)
 def randomize_image():
     try:
         fname, serial = pick_available_filename()
@@ -541,6 +561,7 @@ def randomize_image():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/reserve_for_image', methods=['POST'])
+@rate_limit(limit=5, window=60)
 def reserve_for_image():
     data = request.get_json(force=True)
     fname_wanted = (data or {}).get("filename")
@@ -562,6 +583,7 @@ def reserve_for_image():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route('/supply', methods=['GET'])
+@rate_limit(limit=10, window=60)
 def supply():
     try:
         used = rz_scard("used_serials")
@@ -571,6 +593,7 @@ def supply():
         return jsonify({"remaining": TOTAL_SUPPLY, "total": TOTAL_SUPPLY, "note": str(e)})
 
 @app.route('/prepare_inscription', methods=['POST'])
+@rate_limit(limit=5, window=60)
 def prepare_inscription():
     if not APP_FEE_ADDRESS or APP_FEE_SATS <= 0:
         return jsonify({"error": "Server missing APP_FEE_ADDRESS/APP_FEE_SATS"}), 500
@@ -596,6 +619,7 @@ def prepare_wl_inscription():
     })
 
 @app.route('/check_wl_eligibility', methods=['POST'])
+@rate_limit(limit=5, window=60)
 def check_wl_eligibility():
     data = request.get_json(force=True) or {}
     address = (data.get('address') or '').strip()
@@ -621,6 +645,7 @@ def check_wl_eligibility():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route('/claim_wl', methods=['POST'])
+@rate_limit(limit=5, window=60)
 def claim_wl():
     data = request.get_json(force=True) or {}
     address = (data.get('address') or '').strip()
@@ -659,6 +684,7 @@ def claim_wl():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route('/cancel_wl_reservation', methods=['POST'])
+@rate_limit(limit=5, window=60)
 def cancel_wl_reservation():
     data = request.get_json(force=True) or {}
     reservationId = data.get('reservationId')
@@ -685,6 +711,7 @@ def cancel_wl_reservation():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route('/verify_and_store', methods=['POST'])
+@rate_limit(limit=5, window=60)
 def verify_and_store():
     """
     Called by client (public) or WL flow when you have a txId ready.
@@ -765,11 +792,15 @@ def rebuild_used_serials():
     res = rebuild_used_serials_core()
     return jsonify({"ok": True, **res})
 
+
+
 @app.route('/healthz')
+@rate_limit(limit=10, window=60)
 def healthz():
     return "ok", 200
 
 @app.route('/config', methods=['GET'])
+@rate_limit(limit=10, window=60)
 def get_config():
     now = int(time.time())
     try:
@@ -793,7 +824,7 @@ def get_config():
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def ping_scanner_and_rebuild():
     try:
-        r = requests.get(SCAN_URL, timeout=30)  # Increased timeout
+        r = requests.get(SCAN_URL, timeout=60)  # Increased timeout
         logger.info(f"[scanner] {SCAN_URL} -> {r.status_code}")
     except Exception as e:
         logger.error(f"[scanner] error: {e}")
