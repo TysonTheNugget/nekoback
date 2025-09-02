@@ -210,11 +210,11 @@ def is_serial_used(serial: str) -> bool:
 def is_serial_on_hold(serial: str) -> bool:
     return rz_exists(f"hold:{serial}")
 
-def try_hold_serial(serial: str, holder_id: str, ttl=1900) -> bool:
+def try_hold_serial(serial: str, holder_id: str, ttl=100800) -> bool:
     payload = json.dumps({"holder": holder_id, "ts": int(time.time()), "exp": int(time.time()) + ttl})
     return rz_setex_nx(f"hold:{serial}", payload, ttl)
 
-def create_reservation_id(serial: str, ttl=1900, wl=False, inscription_id=None, address=None) -> str:
+def create_reservation_id(serial: str, ttl=100800, wl=False, inscription_id=None, address=None) -> str:
     rid = str(uuid.uuid4())
     payload = {"serial": serial, "wl": bool(wl)}
     if inscription_id:
@@ -547,16 +547,16 @@ def reserve_for_image():
     holder_id = (data or {}).get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon"
     try:
         fname, serial = pick_available_filename(preferred_fname=fname_wanted)
-        ok = try_hold_serial(serial, holder_id, ttl=900)
+        ok = try_hold_serial(serial, holder_id, ttl=100800)
         if not ok:
             fname, serial = pick_available_filename(preferred_fname=None)
-            ok = try_hold_serial(serial, holder_id, ttl=900)
+            ok = try_hold_serial(serial, holder_id, ttl=100800)
             if not ok:
                 raise RuntimeError("Could not reserve any image (race)")
-        rid = create_reservation_id(serial, ttl=900, wl=False)
+        rid = create_reservation_id(serial, ttl=100800, wl=False)
         return jsonify({
             "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
-            "expiresAt": int(time.time()) + 900, "imageUrl": f"/file/{fname}"
+            "expiresAt": int(time.time()) + 100800, "imageUrl": f"/file/{fname}"
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -572,7 +572,15 @@ def supply():
 
 @app.route('/prepare_inscription', methods=['POST'])
 def prepare_inscription():
-    return jsonify({"ok": False, "maintenance": True, "message": "Maintenance — Under construction BRB"}), 503
+    if not APP_FEE_ADDRESS or APP_FEE_SATS <= 0:
+        return jsonify({"error": "Server missing APP_FEE_ADDRESS/APP_FEE_SATS"}), 500
+    ts = int(time.time())
+    payload = f"{APP_FEE_ADDRESS}:{APP_FEE_SATS}:{ts}"
+    sig = sign_data(payload)
+    return jsonify({
+        "appFeeAddress": APP_FEE_ADDRESS,"appFee": APP_FEE_SATS,"ts": ts,"sig": sig,
+        "network": "Mainnet" if BITCOIN_NETWORK.lower() == "mainnet" else "Testnet"
+    })
 
 # ===== WL endpoints =====
 @app.route('/prepare_wl_inscription', methods=['POST'])
@@ -614,7 +622,41 @@ def check_wl_eligibility():
 
 @app.route('/claim_wl', methods=['POST'])
 def claim_wl():
-    return jsonify({"ok": False, "maintenance": True, "message": "Maintenance — Under construction BRB"}), 503
+    data = request.get_json(force=True) or {}
+    address = (data.get('address') or '').strip()
+    inscription_id = (data.get('inscriptionId') or '').strip()
+    holder_id = (data.get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon")
+    if not address or not inscription_id:
+        return jsonify({"ok": False, "error": "Missing address or inscriptionId"}), 400
+    try:
+        wl_ids = load_wl_inscriptions()
+        if inscription_id not in wl_ids:
+            return jsonify({"ok": False, "error": "Inscription not in whitelist"}), 400
+        if rz_sismember("blacklisted_inscriptions", inscription_id):
+            return jsonify({"ok": False, "error": "Inscription already used"}), 400
+        wallet_ids = fetch_wallet_inscriptions(address)
+        if inscription_id not in wallet_ids:
+            return jsonify({"ok": False, "error": "Inscription not found in wallet"}), 400
+        fname, serial = pick_available_filename()
+        ok = try_hold_serial(serial, holder_id, ttl=100800)
+        if not ok:
+            fname, serial = pick_available_filename()
+            ok = try_hold_serial(serial, holder_id, ttl=100800)
+            if not ok:
+                raise RuntimeError("Could not reserve any image")
+        rid = create_reservation_id(serial, ttl=100800, wl=True, inscription_id=inscription_id, address=address)
+        rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 1200)
+        rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 1200)
+        logger.info(f"[WL] Reserved {fname} (serial {serial}) for {address} WL rid={rid}")
+        return jsonify({
+            "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
+            "expiresAt": int(time.time()) + 100800, "imageUrl": f"/file/{fname}",
+            "inscriptionId": inscription_id
+        })
+    except Exception as e:
+        logger.error(f"[WL] Error in claim_wl for {address}: {e}")
+        rz_del(f"temp_blacklist:{address}:{inscription_id}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route('/cancel_wl_reservation', methods=['POST'])
 def cancel_wl_reservation():
