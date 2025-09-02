@@ -330,7 +330,7 @@ def pick_available_filename(preferred_fname=None, max_attempts=100):
     
 def pick_any_filename_for_slideshow():
     """Return a random filename for slideshow without reserving/locking."""
-    files = [f for f in os.listdir("static/milios") if f.lower().endswith(".png")]
+    files = [f for f in os.listdir("static/Singles") if f.lower().endswith(".png")]
     if not files:
         raise RuntimeError("No slideshow images available")
     fname = random.choice(files)
