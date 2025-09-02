@@ -493,8 +493,6 @@ def wl_finalize_from_scanner(max_items: int = 60):
                 logger.error(f"[WL finalize] error on {key}: {e}")
 
 # ---------- routes ----------
-```python
-# ---------- routes ----------
 @app.route('/', endpoint='index')
 @rate_limit(limit=10, window=60)
 def index():
