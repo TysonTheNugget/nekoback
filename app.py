@@ -32,6 +32,9 @@ SCAN_URL = "https://nekonekobackendscan.vercel.app/api/scan"
 WL_FILE_PATH = os.getenv("WL_INSCRIPTIONS_PATH", None)
 PUBLIC_MINT_KEY = "public_mint_start_ts"
 FORCE_OPEN_KEY = "public_mint_open"
+HCAPTCHA_ENABLED = os.getenv("HCAPTCHA_ENABLED", "1") == "1"
+HCAPTCHA_SITE_KEY = os.getenv("HCAPTCHA_SITE_KEY", "")
+HCAPTCHA_SECRET = os.getenv("HCAPTCHA_SECRET", "")
 
 # ========================================
 SERIAL_REGEX = re.compile(r"\b(\d{10})\b")
@@ -41,6 +44,43 @@ os.makedirs(SINGLES_DIR, exist_ok=True)
 
 # In-memory cache for WL inscriptions
 wl_cache = TTLCache(maxsize=1, ttl=3600)  # Cache for 1 hour
+
+
+def verify_hcaptcha(token, remoteip=None):
+    if not token or not HCAPTCHA_SECRET:
+        return False, {"reason": "missing token or server secret"}
+    data = {"response": token, "secret": HCAPTCHA_SECRET}
+    if remoteip:
+        data["remoteip"] = remoteip
+    try:
+        r = requests.post("https://hcaptcha.com/siteverify", data=data, timeout=5)
+        j = r.json()
+        return bool(j.get("success")), j
+    except Exception as e:
+        return False, {"error": str(e)}
+
+def require_hcaptcha(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not HCAPTCHA_ENABLED:
+            return view(*args, **kwargs)
+
+        # BYPASS for slideshow hits only (still rate-limited)
+        if request.endpoint == 'randomize_image' and request.args.get('mode') == 'slideshow':
+            return view(*args, **kwargs)
+
+        token = (
+            request.headers.get("X-hcaptcha-Token")
+            or (request.is_json and (request.get_json(silent=True) or {}).get("h_captcha_token"))
+            or request.args.get("h-captcha-response")
+            or request.form.get("h-captcha-response")
+        )
+        ok, detail = verify_hcaptcha(token)
+        if not ok:
+            return jsonify({"ok": False, "error": "hcaptcha_failed", "detail": detail}), 429
+        return view(*args, **kwargs)
+    return wrapper
+
 
 def rz_set(key, value):
     return rz_get(f"/set/{key}/{urllib.parse.quote(str(value))}")
@@ -498,7 +538,7 @@ def wl_finalize_from_scanner(max_items: int = 60):
 @app.route('/', endpoint='index')
 @rate_limit(limit=10, window=60)
 def index():
-    return render_template('index.html')
+    return render_template('index.html', HCAPTCHA_SITE_KEY=HCAPTCHA_SITE_KEY)
 
 @app.route('/reservation_status', methods=['POST'], endpoint='reservation_status')
 @rate_limit(limit=5, window=60)
@@ -556,6 +596,7 @@ def admin_set_public_mint():
 
 @app.route('/randomize', methods=['POST'], endpoint='randomize_image')
 @rate_limit(limit=5, window=60)
+@require_hcaptcha
 def randomize_image():
     try:
         fname, serial = pick_available_filename()
