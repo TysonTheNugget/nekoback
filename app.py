@@ -9,6 +9,7 @@ from cachetools import TTLCache
 import asyncio
 import logging
 from datetime import datetime
+from functools import wraps
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -172,6 +173,7 @@ from datetime import datetime
 
 def rate_limit(key_prefix="rate:", limit=10, window=60):
     def decorator(func):
+        @wraps(func)   # <-- this line is the fix
         def wrapped(*args, **kwargs):
             ip = request.remote_addr
             key = f"{key_prefix}{ip}:{func.__name__}"
