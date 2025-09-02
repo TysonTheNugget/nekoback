@@ -214,10 +214,10 @@ def is_serial_used(serial: str) -> bool:
     return rz_sismember("used_serials", serial)
 def is_serial_on_hold(serial: str) -> bool:
     return rz_exists(f"hold:{serial}")
-def try_hold_serial(serial: str, holder_id: str, ttl=1900) -> bool:
+def try_hold_serial(serial: str, holder_id: str, ttl=100800) -> bool:
     payload = json.dumps({"holder": holder_id, "ts": int(time.time()), "exp": int(time.time()) + ttl})
     return rz_setex_nx(f"hold:{serial}", payload, ttl)
-def create_reservation_id(serial: str, ttl=1900, wl=False, inscription_id=None, address=None) -> str:
+def create_reservation_id(serial: str, ttl=100800, wl=False, inscription_id=None, address=None) -> str:
     rid = str(uuid.uuid4())
     payload = {"serial": serial, "wl": bool(wl)}
     if inscription_id:
@@ -570,16 +570,16 @@ def reserve_for_image():
     holder_id = data.get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon"
     try:
         fname, serial = pick_available_filename(preferred_fname=fname_wanted)
-        ok = try_hold_serial(serial, holder_id, ttl=900)
+        ok = try_hold_serial(serial, holder_id, ttl=100800)
         if not ok:
             fname, serial = pick_available_filename(preferred_fname=None)
-            ok = try_hold_serial(serial, holder_id, ttl=900)
+            ok = try_hold_serial(serial, holder_id, ttl=100800)
             if not ok:
                 raise RuntimeError("Could not reserve any image (race)")
-        rid = create_reservation_id(serial, ttl=900, wl=False)
+        rid = create_reservation_id(serial, ttl=100800, wl=False)
         return jsonify({
             "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
-            "expiresAt": int(time.time()) + 900, "imageUrl": f"/file/{fname}"
+            "expiresAt": int(time.time()) + 100800, "imageUrl": f"/file/{fname}"
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -690,19 +690,19 @@ def claim_wl():
         if inscription_id not in wallet_ids:
             return jsonify({"ok": False, "error": "Inscription not found in wallet"}), 400
         fname, serial = pick_available_filename()
-        ok = try_hold_serial(serial, holder_id, ttl=1200)
+        ok = try_hold_serial(serial, holder_id, ttl=100800)
         if not ok:
             fname, serial = pick_available_filename()
-            ok = try_hold_serial(serial, holder_id, ttl=1200)
+            ok = try_hold_serial(serial, holder_id, ttl=100800)
             if not ok:
                 raise RuntimeError("Could not reserve any image")
-        rid = create_reservation_id(serial, ttl=1200, wl=True, inscription_id=inscription_id, address=address)
-        rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 1200)
+        rid = create_reservation_id(serial, ttl=100800, wl=True, inscription_id=inscription_id, address=address)
+        rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 100800)
         rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 1200)
         logger.info(f"[WL] Reserved {fname} (serial {serial}) for {address} WL rid={rid}")
         return jsonify({
             "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
-            "expiresAt": int(time.time()) + 1200, "imageUrl": f"/file/{fname}",
+            "expiresAt": int(time.time()) + 100800, "imageUrl": f"/file/{fname}",
             "inscriptionId": inscription_id
         })
     except Exception as e:
@@ -826,6 +826,36 @@ def healthz():
     if check_rate_limit(ip, route_name, max_requests=50, period=60):
         return jsonify({"error": "Rate limit exceeded"}), 429
     return "ok", 200
+    
+@app.route('/admin/clear_reservations', methods=['POST'])
+def clear_reservations():
+    token = request.headers.get("X-Internal-Token")
+    if token != os.environ.get("INTERNAL_TOKEN"):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name, max_requests=5, period=60):
+        return jsonify({"error": "Rate limit exceeded"}), 429
+
+    patterns = ["hold:*", "resv:*", "resv_for_serial:*", "wl_pending:*", "temp_blacklist:*"]
+    deleted_count = 0
+    try:
+        for pattern in patterns:
+            for keys in scan_keys(match_pattern=pattern, count=1000):
+                for key in keys:
+                    try:
+                        rz_del(key)
+                        deleted_count += 1
+                        logger.info(f"Deleted key: {key}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete {key}: {e}")
+        logger.info(f"[ClearReservations] Deleted {deleted_count} reservation-related keys")
+        return jsonify({"ok": True, "deleted_keys": deleted_count})
+    except Exception as e:
+        logger.error(f"[ClearReservations] Error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+        
 @app.route('/config', methods=['GET'])
 def get_config():
     ip = request.remote_addr
