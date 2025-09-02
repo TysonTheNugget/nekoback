@@ -65,7 +65,7 @@ def require_hcaptcha(view):
         if not HCAPTCHA_ENABLED:
             return view(*args, **kwargs)
 
-        # BYPASS for slideshow hits only (still rate-limited)
+        # Bypass for slideshow requests to /randomize
         if request.endpoint == 'randomize_image' and request.args.get('mode') == 'slideshow':
             return view(*args, **kwargs)
 
@@ -75,7 +75,7 @@ def require_hcaptcha(view):
             or request.args.get("h-captcha-response")
             or request.form.get("h-captcha-response")
         )
-        ok, detail = verify_hcaptcha(token)
+        ok, detail = verify_hcaptcha(token, remoteip=request.remote_addr)
         if not ok:
             return jsonify({"ok": False, "error": "hcaptcha_failed", "detail": detail}), 429
         return view(*args, **kwargs)
@@ -226,6 +226,25 @@ def rate_limit(key_prefix="rate:", limit=10, window=60):
             return func(*args, **kwargs)
         return wrapped
     return decorator
+    
+def rate_limit_randomize(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        # No rate-limit for slideshow mode
+        if request.args.get('mode') == 'slideshow':
+            return func(*args, **kwargs)
+
+        # Otherwise: same logic as rate_limit(limit=5, window=60)
+        ip = request.remote_addr
+        key = f"rate:{ip}:{func.__name__}"
+        count = rz_get(f"/incr/{key}")
+        if count == 1:
+            rz_setex(key, count, 60)  # 60s window
+        if count > 5:
+            logger.warning(f"[Rate Limit] Blocked {ip} on {func.__name__} (count={count})")
+            return jsonify({"ok": False, "error": "Rate limit exceeded. Try again later."}), 429
+        return func(*args, **kwargs)
+    return wrapped
 
 # ---------- helpers ----------
 def sign_data(payload: str) -> str:
@@ -595,13 +614,22 @@ def admin_set_public_mint():
     return jsonify({"ok": True, "publicMintStartTs": start_ts, "publicMintOpen": forced_open})
 
 @app.route('/randomize', methods=['POST'], endpoint='randomize_image')
+@rate_limit_randomize
 @require_hcaptcha
 def randomize_image():
     try:
-        fname, serial = pick_available_filename()
+        if request.args.get('mode') == 'slideshow':
+            # Do NOT reserve/hold for slideshow; just show any image
+            fname = pick_any_filename_for_slideshow()
+            serial = extract_serial_from_filename(fname)
+        else:
+            # Mint flow—respect availability + reservations
+            fname, serial = pick_available_filename()
+
         image_info = {'background': fname, 'serial': serial, 'fightCode': ''}
         return jsonify({'imageUrl': f"/file/{fname}", 'imageInfo': image_info})
     except Exception as e:
+        logger.exception("[randomize] error")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/reserve_for_image', methods=['POST'], endpoint='reserve_for_image')

@@ -137,6 +137,7 @@
     let slideshowTimer = null;
     let isWLReservation = false;
     let wlInscriptionId = null;
+	let captchaWidgetId = null;
     const SLIDESHOW_MS = 5000;
     window.ordinalAddress = null;
     const $id = (x) => document.getElementById(x);
@@ -144,15 +145,22 @@
 
     // === hCaptcha helper (render once, reuse; execute invisibly) ===
     async function getHCToken() {
-      const el = document.querySelector('.h-captcha');
-      let widgetId;
-      if (window.hcaptcha && hcaptcha.rendered && hcaptcha.rendered.length) {
-        widgetId = hcaptcha.rendered[0];
-      } else {
-        widgetId = hcaptcha.render(el);
-      }
-      return hcaptcha.execute(widgetId, { async: true });
-    }
+        // wait until script is loaded
+        if (!window.hcaptcha) {
+          await new Promise(r => setTimeout(r, 50));
+        }
+        if (!captchaWidgetId) {
+          const el = document.querySelector('.h-captcha');
+          captchaWidgetId = hcaptcha.render(el);
+        }
+        try {
+          // invisible execute — returns a token
+          return await hcaptcha.execute(captchaWidgetId, { async: true });
+        } catch (e) {
+          // if user closes challenge, reset so we can try again later
+          try { hcaptcha.reset(captchaWidgetId); } catch { }
+          throw e;
+        }
 
     function setStatusHTML(html) {
       document.getElementById('status').innerHTML = html || '';
@@ -180,13 +188,13 @@
 
     // SLIDESHOW — no captcha, uses `mode=slideshow` bypass on server
     async function slideshowTick() {
-      try {
-        const res = await fetch('/randomize?mode=slideshow', { method: 'POST' });
-        if (!res.ok) throw new Error('Randomize HTTP ' + res.status);
-        const response = await res.json();
-        if (response.imageUrl) fadeSwapImage(response.imageUrl);
-      } catch (_) { }
-    }
+        try {
+          const res = await fetch('/randomize?mode=slideshow', { method: 'POST' });
+          if (!res.ok) throw new Error('Randomize HTTP ' + res.status);
+          const response = await res.json();
+          if (response.imageUrl) fadeSwapImage(response.imageUrl);
+        } catch (_) { }
+      }
 
     function startSlideshow() {
       if (slideshowTimer) clearInterval(slideshowTimer);
