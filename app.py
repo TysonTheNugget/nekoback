@@ -8,18 +8,14 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from cachetools import TTLCache
 import asyncio
 import logging
-from datetime import datetime
-from functools import wraps
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
-
 # ========= CONFIG (env in prod) =========
 APP_FEE_ADDRESS = os.getenv("APP_FEE_ADDRESS", "bc1p7w28we62hv7vnvm4jcqrn6e8y5y6qfvvuaq8at0jpj8jyq5lymusp5jsvq")
-APP_FEE_SATS = int(os.getenv("APP_FEE_SATS", "6000"))  # Public mint fee
-WL_FEE_SATS = int(os.getenv("WL_FEE_SATS", "600"))  # WL fee
+APP_FEE_SATS = int(os.getenv("APP_FEE_SATS", "6000")) # Public mint fee
+WL_FEE_SATS = int(os.getenv("WL_FEE_SATS", "600")) # WL fee
 APP_SECRET = os.getenv("APP_SECRET", "local-dev-secret-change-me")
 BITCOIN_NETWORK = os.getenv("BITCOIN_NETWORK", "mainnet")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
@@ -32,107 +28,57 @@ SCAN_URL = "https://nekonekobackendscan.vercel.app/api/scan"
 WL_FILE_PATH = os.getenv("WL_INSCRIPTIONS_PATH", None)
 PUBLIC_MINT_KEY = "public_mint_start_ts"
 FORCE_OPEN_KEY = "public_mint_open"
-HCAPTCHA_ENABLED = os.getenv("HCAPTCHA_ENABLED", "1") == "1"
 HCAPTCHA_SITE_KEY = os.getenv("HCAPTCHA_SITE_KEY", "")
 HCAPTCHA_SECRET = os.getenv("HCAPTCHA_SECRET", "")
-
+HCAPTCHA_ENABLED = os.getenv("HCAPTCHA_ENABLED", "false").lower() in ("true", "1", "yes")
 # ========================================
 SERIAL_REGEX = re.compile(r"\b(\d{10})\b")
 current_directory = os.path.dirname(os.path.abspath(__file__))
 SINGLES_DIR = os.path.join(current_directory, 'static', 'Singles')
 os.makedirs(SINGLES_DIR, exist_ok=True)
-
 # In-memory cache for WL inscriptions
-wl_cache = TTLCache(maxsize=1, ttl=3600)  # Cache for 1 hour
-
-
-def verify_hcaptcha(token, remoteip=None):
-    if not token or not HCAPTCHA_SECRET:
-        return False, {"reason": "missing token or server secret"}
-    data = {"response": token, "secret": HCAPTCHA_SECRET}
-    if remoteip:
-        data["remoteip"] = remoteip
-    try:
-        r = requests.post("https://hcaptcha.com/siteverify", data=data, timeout=5)
-        j = r.json()
-        return bool(j.get("success")), j
-    except Exception as e:
-        return False, {"error": str(e)}
-
-def require_hcaptcha(view):
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        if not HCAPTCHA_ENABLED:
-            return view(*args, **kwargs)
-
-        # Accept token via header, JSON body, query, or form — whichever you prefer on the client
-        token = (
-            request.headers.get("X-hcaptcha-Token")
-            or (request.is_json and (request.get_json(silent=True) or {}).get("h_captcha_token"))
-            or request.args.get("h-captcha-response")
-            or request.form.get("h-captcha-response")
-        )
-
-        ok, detail = verify_hcaptcha(token)
-        if not ok:
-            return jsonify({"ok": False, "error": "hcaptcha_failed", "detail": detail}), 429
-        return view(*args, **kwargs)
-    return wrapper
-
-
+wl_cache = TTLCache(maxsize=1, ttl=3600) # Cache for 1 hour
 def rz_set(key, value):
     return rz_get(f"/set/{key}/{urllib.parse.quote(str(value))}")
-
 # ---------- Upstash helpers ----------
 def _rz_result(payload):
     if isinstance(payload, dict) and "result" in payload:
         return payload["result"]
     return payload
-
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def rz_get(path):
     r = requests.get(f"{UPSTASH_URL}{path}",
                      headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
-                     timeout=60)  # Increased timeout
+                     timeout=30) # Increased timeout
     r.raise_for_status()
     return _rz_result(r.json())
-
 def rz_post_pipeline(cmds):
     r = requests.post(f"{UPSTASH_URL}/pipeline",
                       headers={"Authorization": f"Bearer {UPSTASH_TOKEN}",
                                "Content-Type": "application/json"},
                       data=json.dumps(cmds),
-                      timeout=60)  # Increased timeout
+                      timeout=30) # Increased timeout
     r.raise_for_status()
     data = r.json()
     return [_rz_result(item) for item in data]
-
 def rz_exists(key):
     res = rz_get(f"/exists/{key}")
     return int(res) == 1
-
 def rz_sismember(key, member):
     res = rz_get(f"/sismember/{key}/{member}")
     return int(res) == 1
-
 def rz_sadd(key, member):
     return rz_get(f"/sadd/{key}/{member}")
-
-
 def rz_scard(key):
     res = rz_get(f"/scard/{key}")
     return int(res)
-
 def rz_setex_nx(key, value, ttl_sec):
     resp = rz_post_pipeline([["SET", key, value, "NX", "EX", str(ttl_sec)]])
     return bool(resp and resp[0] == "OK")
-
 def rz_setex(key, value, ttl_sec):
     return rz_get(f"/set/{key}/{value}?ex={ttl_sec}")
-
 def rz_del(key):
     return rz_get(f"/del/{key}")
-
 def rz_hgetall(key):
     res = rz_get(f"/hgetall/{key}")
     if isinstance(res, dict):
@@ -148,7 +94,6 @@ def rz_hgetall(key):
             d[str(k)] = v
         return d
     return {}
-
 def rz_get_json(key):
     val = rz_get(f"/get/{key}")
     if val in (None, "null"):
@@ -159,7 +104,6 @@ def rz_get_json(key):
         return json.loads(val)
     except:
         return val
-
 def scan_keys(match_pattern="tx:*", count=1000):
     cursor = "0"
     headers = {"Authorization": f"Bearer {UPSTASH_TOKEN}"}
@@ -167,7 +111,7 @@ def scan_keys(match_pattern="tx:*", count=1000):
         url = f"{UPSTASH_URL}/scan/{cursor}?count={count}"
         if match_pattern:
             url += f"&match={match_pattern}"
-        r = requests.get(url, headers=headers, timeout=60)  # Increased timeout
+        r = requests.get(url, headers=headers, timeout=30) # Increased timeout
         r.raise_for_status()
         data = r.json()
         if isinstance(data, dict) and "result" in data:
@@ -188,7 +132,6 @@ def scan_keys(match_pattern="tx:*", count=1000):
         yield keys
         if cursor == "0":
             break
-
 def rz_hset_many(key: str, mapping: dict):
     flat = []
     for k, v in mapping.items():
@@ -199,49 +142,57 @@ def rz_hset_many(key: str, mapping: dict):
         flat.extend([k, v])
     resp = rz_post_pipeline([["HSET", key] + flat])
     return resp and resp[0]
-
 def rz_ttl(key: str) -> int:
     try:
         res = rz_get(f"/ttl/{key}")
         return int(res)
     except Exception:
         return -2
-        
-from datetime import datetime
-
-def rate_limit(key_prefix="rate:", limit=10, window=60):
-    def decorator(func):
-        @wraps(func)   # <-- this line is the fix
-        def wrapped(*args, **kwargs):
-            ip = request.remote_addr
-            key = f"{key_prefix}{ip}:{func.__name__}"
-            count = rz_get(f"/incr/{key}")
-            if count == 1:
-                rz_setex(key, count, window)  # Set expiration on first incr
-            if count > limit:
-                logger.warning(f"[Rate Limit] Blocked {ip} on {func.__name__} (count={count})")
-                return jsonify({"ok": False, "error": "Rate limit exceeded. Try again later."}), 429
-            return func(*args, **kwargs)
-        return wrapped
-    return decorator
-
+# ---------- hCaptcha verification ----------
+def verify_hcaptcha(token):
+    if not HCAPTCHA_ENABLED or not token:
+        return not HCAPTCHA_ENABLED  # If enabled but no token, fail; else pass
+    try:
+        r = requests.post("https://hcaptcha.com/siteverify", data={"secret": HCAPTCHA_SECRET, "response": token}, timeout=5)
+        r.raise_for_status()
+        j = r.json()
+        return j.get("success", False)
+    except Exception as e:
+        logger.error(f"[hCaptcha] Verification error: {e}")
+        return False
+# ---------- Rate limiting ----------
+def check_rate_limit(ip, route_name, max_requests=20, period=60):
+    if not ip:
+        return False
+    key = f"rl:{ip}:{route_name}"
+    try:
+        cmds = [
+            ["INCR", key],
+            ["TTL", key]
+        ]
+        results = rz_post_pipeline(cmds)
+        count = int(results[0]) if results[0] is not None else 0
+        ttl = int(results[1]) if results[1] is not None else -2
+        if ttl == -1 or ttl == -2:  # New key or error, set expire
+            rz_post_pipeline([["EXPIRE", key, period]])
+        return count > max_requests
+    except Exception as e:
+        logger.error(f"[RateLimit] Error for {key}: {e}")
+        return False  # Allow if Redis fails
 # ---------- helpers ----------
 def sign_data(payload: str) -> str:
     return hmac.new(APP_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-
 def list_pngs(directory):
     return [f for f in os.listdir(directory) if f.lower().endswith(".png")]
-
 def extract_serial_from_filename(fname: str):
     m = SERIAL_REGEX.search(fname)
     if m:
         return m.group(1)
     base = os.path.splitext(os.path.basename(fname))[0]
     return base
-
 def fetch_tx_outputs(txid: str):
     base = "https://blockstream.info/api" if BITCOIN_NETWORK.lower() == "mainnet" else "https://blockstream.info/testnet/api"
-    r = requests.get(f"{base}/tx/{txid}", timeout=60)  # Increased timeout
+    r = requests.get(f"{base}/tx/{txid}", timeout=30) # Increased timeout
     r.raise_for_status()
     j = r.json()
     outs = []
@@ -251,7 +202,6 @@ def fetch_tx_outputs(txid: str):
             "value": vout.get("value", 0)
         })
     return outs
-
 def tx_pays_app_fee(txid: str, wl=False) -> bool:
     try:
         outputs = fetch_tx_outputs(txid)
@@ -260,18 +210,14 @@ def tx_pays_app_fee(txid: str, wl=False) -> bool:
     fee_sats = WL_FEE_SATS if wl else APP_FEE_SATS
     total_to_app = sum(o["value"] for o in outputs if o.get("address") == APP_FEE_ADDRESS)
     return total_to_app >= fee_sats
-
 def is_serial_used(serial: str) -> bool:
     return rz_sismember("used_serials", serial)
-
 def is_serial_on_hold(serial: str) -> bool:
     return rz_exists(f"hold:{serial}")
-
-def try_hold_serial(serial: str, holder_id: str, ttl=100800) -> bool:
+def try_hold_serial(serial: str, holder_id: str, ttl=1900) -> bool:
     payload = json.dumps({"holder": holder_id, "ts": int(time.time()), "exp": int(time.time()) + ttl})
     return rz_setex_nx(f"hold:{serial}", payload, ttl)
-
-def create_reservation_id(serial: str, ttl=100800, wl=False, inscription_id=None, address=None) -> str:
+def create_reservation_id(serial: str, ttl=1900, wl=False, inscription_id=None, address=None) -> str:
     rid = str(uuid.uuid4())
     payload = {"serial": serial, "wl": bool(wl)}
     if inscription_id:
@@ -283,7 +229,6 @@ def create_reservation_id(serial: str, ttl=100800, wl=False, inscription_id=None
     # NEW: map serial -> rid so that serial can't be reserved twice concurrently
     rz_setex(f"resv_for_serial:{serial}", rid, ttl)
     return rid
-
 def pick_available_filename(preferred_fname=None, max_attempts=100):
     files = list_pngs(SINGLES_DIR)
     random.shuffle(files)
@@ -297,16 +242,15 @@ def pick_available_filename(preferred_fname=None, max_attempts=100):
         if attempts > max_attempts:
             break
         serial = extract_serial_from_filename(fname)
-        if is_serial_used(serial): 
+        if is_serial_used(serial):
             continue
-        if is_serial_on_hold(serial): 
+        if is_serial_on_hold(serial):
             continue
         # NEW: skip if there is an active reservation mapping for this serial
         if rz_exists(f"resv_for_serial:{serial}"):
             continue
         return fname, serial
     raise RuntimeError("No available images to reserve")
-
 # ---------- WL helpers ----------
 def load_wl_inscriptions():
     cache_key = "wl_inscriptions"
@@ -336,7 +280,6 @@ def load_wl_inscriptions():
     except Exception as e:
         logger.error(f"[WL] Error loading WL from {path}: {e}")
         return set()
-
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def fetch_wallet_inscriptions(address: str):
     cache_key = f"inscriptions:{address}"
@@ -362,7 +305,7 @@ def fetch_wallet_inscriptions(address: str):
     try:
         while True:
             url = f"{base}?address={urllib.parse.quote(address)}&limit={limit}&offset={offset}"
-            r = session.get(url, headers=headers, timeout=60)
+            r = session.get(url, headers=headers, timeout=30)
             if r.status_code == 400 and "limit must be" in (r.text or ""):
                 if limit > 60:
                     limit = 60
@@ -378,14 +321,13 @@ def fetch_wallet_inscriptions(address: str):
                     out.append(_id)
             offset += len(results)
             # Removed cap: if offset >= 600: break
-            time.sleep(1.2 if not HIRO_API_TOKEN else 0.2)  # Longer delay for unauthenticated
+            time.sleep(1.2 if not HIRO_API_TOKEN else 0.2) # Longer delay for unauthenticated
         logger.info(f"[WL] Wallet {address} has {len(out)} inscriptions (sample {out[:4]})")
         rz_setex(cache_key, json.dumps(out), 3600)
         return out
     except Exception as e:
         logger.error(f"[WL] Hiro fetch error for {address}: {e}")
         return out
-
 def wl_reconcile_by_counter():
     """
     Fallback: if WL reservation’s serial is already in used_serials, finalize anyway.
@@ -436,7 +378,6 @@ def wl_reconcile_by_counter():
                     logger.info(f"[WL reconcile] serial={serial} used; no tx. Blacklisted {insc} (SADD={added}), cleaned rid={rid}")
             except Exception as e:
                 logger.error(f"[WL reconcile] error on {key}: {e}")
-
 async def rebuild_used_serials_core_async():
     added = 0
     total = 0
@@ -452,15 +393,13 @@ async def rebuild_used_serials_core_async():
             if serial:
                 rz_sadd("used_serials", serial)
                 added += 1
-            if total % 100 == 0:  # Log progress every 100 keys
+            if total % 100 == 0: # Log progress every 100 keys
                 logger.info(f"[rebuild] Processed {total} keys, added {added} serials")
-            await asyncio.sleep(0)  # Yield control to event loop
+            await asyncio.sleep(0) # Yield control to event loop
     logger.info(f"[rebuild] Completed: scanned {total} keys, added {added} serials")
     return {"scanned_tx_keys": total, "added_to_used_serials": added}
-
 def rebuild_used_serials_core():
     return asyncio.run(rebuild_used_serials_core_async())
-
 def _parse_iso_utc(s: str) -> int:
     """
     Very small ISO parser. Accepts:
@@ -477,7 +416,6 @@ def _parse_iso_utc(s: str) -> int:
     y, m, d = map(int, s[:10].split("-"))
     hh, mm, ss = map(int, s[11:19].split(":"))
     return int(time.mktime((y, m, d, hh, mm, ss, 0, 0, 0))) - time.timezone
-
 def wl_finalize_from_scanner(max_items: int = 60):
     processed = 0
     for keys in scan_keys(match_pattern="wl_pending:*", count=200):
@@ -531,17 +469,24 @@ def wl_finalize_from_scanner(max_items: int = 60):
                     break
             except Exception as e:
                 logger.error(f"[WL finalize] error on {key}: {e}")
-
 # ---------- routes ----------
-@app.route('/', endpoint='index')
-@rate_limit(limit=10, window=60)
+@app.route('/')
 def index():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name, max_requests=50, period=60):  # Higher for GET
+        return jsonify({"error": "Rate limit exceeded"}), 429
     return render_template('index.html')
-
-@app.route('/reservation_status', methods=['POST'], endpoint='reservation_status')
-@rate_limit(limit=5, window=60)
+@app.route('/reservation_status', methods=['POST'])
 def reservation_status():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
     rid = data.get('reservationId')
     if not rid:
         return jsonify({"ok": False, "error": "Missing reservationId"}), 400
@@ -557,16 +502,20 @@ def reservation_status():
     used = is_serial_used(serial)
     ttl = rz_ttl(f"hold:{serial}")
     return jsonify({"ok": True, "active": True, "serial": serial, "used": used, "ttl": ttl, "wl": wl})
-
-@app.route('/file/<path:fname>', endpoint='serve_original')
-@rate_limit(limit=10, window=60)
+@app.route('/file/<path:fname>')
 def serve_original(fname):
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name, max_requests=50, period=60):  # Higher for GET
+        return jsonify({"error": "Rate limit exceeded"}), 429
     path = os.path.join(SINGLES_DIR, fname)
     return send_file(path, mimetype='image/png', as_attachment=False)
-
-@app.route('/admin/set_public_mint', methods=['POST'], endpoint='admin_set_public_mint')
-@rate_limit(limit=5, window=60)
+@app.route('/admin/set_public_mint', methods=['POST'])
 def admin_set_public_mint():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name, max_requests=5, period=60):  # Lower for admin POST
+        return jsonify({"error": "Rate limit exceeded"}), 429
     if request.headers.get("X-Internal-Token") != os.getenv("INTERNAL_TOKEN", ""):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     data = request.get_json(force=True) or {}
@@ -591,52 +540,71 @@ def admin_set_public_mint():
     o = rz_get(f"/get/{FORCE_OPEN_KEY}")
     forced_open = (str(o) == "1")
     return jsonify({"ok": True, "publicMintStartTs": start_ts, "publicMintOpen": forced_open})
-
-@app.route('/randomize', methods=['POST'], endpoint='randomize_image')
-@require_hcaptcha
+@app.route('/randomize', methods=['POST'])
 def randomize_image():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
+    data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
     try:
         fname, serial = pick_available_filename()
         image_info = {'background': fname, 'serial': serial, 'fightCode': ''}
         return jsonify({'imageUrl': f"/file/{fname}", 'imageInfo': image_info})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-@app.route('/reserve_for_image', methods=['POST'], endpoint='reserve_for_image')
-@rate_limit(limit=5, window=60)
+@app.route('/reserve_for_image', methods=['POST'])
 def reserve_for_image():
-    data = request.get_json(force=True)
-    fname_wanted = (data or {}).get("filename")
-    holder_id = (data or {}).get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon"
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
+    data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    fname_wanted = data.get("filename")
+    holder_id = data.get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon"
     try:
         fname, serial = pick_available_filename(preferred_fname=fname_wanted)
-        ok = try_hold_serial(serial, holder_id, ttl=100800)
+        ok = try_hold_serial(serial, holder_id, ttl=900)
         if not ok:
             fname, serial = pick_available_filename(preferred_fname=None)
-            ok = try_hold_serial(serial, holder_id, ttl=100800)
+            ok = try_hold_serial(serial, holder_id, ttl=900)
             if not ok:
                 raise RuntimeError("Could not reserve any image (race)")
-        rid = create_reservation_id(serial, ttl=100800, wl=False)
+        rid = create_reservation_id(serial, ttl=900, wl=False)
         return jsonify({
             "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
-            "expiresAt": int(time.time()) + 100800, "imageUrl": f"/file/{fname}"
+            "expiresAt": int(time.time()) + 900, "imageUrl": f"/file/{fname}"
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route('/supply', methods=['GET'], endpoint='supply')
-@rate_limit(limit=10, window=60)
+@app.route('/supply', methods=['GET'])
 def supply():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name, max_requests=50, period=60):
+        return jsonify({"error": "Rate limit exceeded"}), 429
     try:
         used = rz_scard("used_serials")
         remaining = max(0, TOTAL_SUPPLY - used)
         return jsonify({"remaining": remaining, "total": TOTAL_SUPPLY})
     except Exception as e:
         return jsonify({"remaining": TOTAL_SUPPLY, "total": TOTAL_SUPPLY, "note": str(e)})
-
-@app.route('/prepare_inscription', methods=['POST'], endpoint='prepare_inscription')
-@rate_limit(limit=5, window=60)
+@app.route('/prepare_inscription', methods=['POST'])
 def prepare_inscription():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
+    data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
     if not APP_FEE_ADDRESS or APP_FEE_SATS <= 0:
         return jsonify({"error": "Server missing APP_FEE_ADDRESS/APP_FEE_SATS"}), 500
     ts = int(time.time())
@@ -646,11 +614,17 @@ def prepare_inscription():
         "appFeeAddress": APP_FEE_ADDRESS,"appFee": APP_FEE_SATS,"ts": ts,"sig": sig,
         "network": "Mainnet" if BITCOIN_NETWORK.lower() == "mainnet" else "Testnet"
     })
-
 # ===== WL endpoints =====
-@app.route('/prepare_wl_inscription', methods=['POST'], endpoint='prepare_wl_inscription')
-@rate_limit(limit=5, window=60)
+@app.route('/prepare_wl_inscription', methods=['POST'])
 def prepare_wl_inscription():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
+    data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
     if not APP_FEE_ADDRESS or WL_FEE_SATS <= 0:
         return jsonify({"error": "Server missing APP_FEE_ADDRESS/WL_FEE_SATS"}), 500
     ts = int(time.time())
@@ -660,11 +634,16 @@ def prepare_wl_inscription():
         "appFeeAddress": APP_FEE_ADDRESS, "appFee": WL_FEE_SATS, "ts": ts, "sig": sig,
         "network": "Mainnet" if BITCOIN_NETWORK.lower() == "mainnet" else "Testnet"
     })
-
-@app.route('/check_wl_eligibility', methods=['POST'], endpoint='check_wl_eligibility')
-@rate_limit(limit=5, window=60)
+@app.route('/check_wl_eligibility', methods=['POST'])
 def check_wl_eligibility():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
     address = (data.get('address') or '').strip()
     if not address:
         return jsonify({"ok": False, "error": "Missing address"}), 400
@@ -686,11 +665,16 @@ def check_wl_eligibility():
     except Exception as e:
         logger.error(f"[WL] Error in check_wl_eligibility for {address}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route('/claim_wl', methods=['POST'], endpoint='claim_wl')
-@rate_limit(limit=5, window=60)
+@app.route('/claim_wl', methods=['POST'])
 def claim_wl():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
     address = (data.get('address') or '').strip()
     inscription_id = (data.get('inscriptionId') or '').strip()
     holder_id = (data.get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon")
@@ -706,30 +690,35 @@ def claim_wl():
         if inscription_id not in wallet_ids:
             return jsonify({"ok": False, "error": "Inscription not found in wallet"}), 400
         fname, serial = pick_available_filename()
-        ok = try_hold_serial(serial, holder_id, ttl=100800)
+        ok = try_hold_serial(serial, holder_id, ttl=1200)
         if not ok:
             fname, serial = pick_available_filename()
-            ok = try_hold_serial(serial, holder_id, ttl=100800)
+            ok = try_hold_serial(serial, holder_id, ttl=1200)
             if not ok:
                 raise RuntimeError("Could not reserve any image")
-        rid = create_reservation_id(serial, ttl=100800, wl=True, inscription_id=inscription_id, address=address)
-        rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 1800)
-        rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 60)
+        rid = create_reservation_id(serial, ttl=1200, wl=True, inscription_id=inscription_id, address=address)
+        rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 1200)
+        rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 1200)
         logger.info(f"[WL] Reserved {fname} (serial {serial}) for {address} WL rid={rid}")
         return jsonify({
             "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
-            "expiresAt": int(time.time()) + 100800, "imageUrl": f"/file/{fname}",
+            "expiresAt": int(time.time()) + 1200, "imageUrl": f"/file/{fname}",
             "inscriptionId": inscription_id
         })
     except Exception as e:
         logger.error(f"[WL] Error in claim_wl for {address}: {e}")
         rz_del(f"temp_blacklist:{address}:{inscription_id}")
         return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route('/cancel_wl_reservation', methods=['POST'], endpoint='cancel_wl_reservation')
-@rate_limit(limit=5, window=60)
+@app.route('/cancel_wl_reservation', methods=['POST'])
 def cancel_wl_reservation():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
     reservationId = data.get('reservationId')
     filename = data.get('filename')
     address = data.get('address')
@@ -752,16 +741,21 @@ def cancel_wl_reservation():
     except Exception as e:
         logger.error(f"[WL] Error in cancel_wl_reservation: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route('/verify_and_store', methods=['POST'], endpoint='verify_and_store')
-@rate_limit(limit=5, window=60)
+@app.route('/verify_and_store', methods=['POST'])
 def verify_and_store():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name):
+        return jsonify({"error": "Rate limit exceeded"}), 429
+    data = request.get_json(force=True) or {}
+    token = data.get('hCaptchaToken')
+    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
+        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
     """
     Called by client (public) or WL flow when you have a txId ready.
     - Increments used_serials immediately (uniqueness enforced).
     - For WL, blacklists the exact inscription id passed/reserved.
     """
-    data = request.get_json(force=True)
     txId = data.get('txId')
     reservationId = data.get('reservationId')
     body_inscription = data.get('inscriptionId')
@@ -813,28 +807,31 @@ def verify_and_store():
     except Exception as e:
         logger.error(f"[VS] verify_and_store error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-
-
-
 # ---------- Admin ----------
 @app.route('/admin/rebuild_used_serials', methods=['GET', 'POST'])
 def rebuild_used_serials():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name, max_requests=5, period=60):
+        return jsonify({"error": "Rate limit exceeded"}), 429
     token = request.headers.get("X-Internal-Token")
     if token != os.environ.get("INTERNAL_TOKEN"):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     res = rebuild_used_serials_core()
     return jsonify({"ok": True, **res})
-
-
-
 @app.route('/healthz')
-@rate_limit(limit=10, window=60)
 def healthz():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name, max_requests=50, period=60):
+        return jsonify({"error": "Rate limit exceeded"}), 429
     return "ok", 200
-
 @app.route('/config', methods=['GET'])
-@rate_limit(limit=10, window=60)
 def get_config():
+    ip = request.remote_addr
+    route_name = request.path
+    if check_rate_limit(ip, route_name, max_requests=50, period=60):
+        return jsonify({"error": "Rate limit exceeded"}), 429
     now = int(time.time())
     try:
         v = rz_get(f"/get/{PUBLIC_MINT_KEY}")
@@ -852,12 +849,11 @@ def get_config():
         "publicMintStartTs": start_ts,
         "publicMintOpen": public_open
     })
-
 # ---------- Periodic: ping scanner + rebuild counter ----------
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def ping_scanner_and_rebuild():
     try:
-        r = requests.get(SCAN_URL, timeout=60)  # Increased timeout
+        r = requests.get(SCAN_URL, timeout=30) # Increased timeout
         logger.info(f"[scanner] {SCAN_URL} -> {r.status_code}")
     except Exception as e:
         logger.error(f"[scanner] error: {e}")
@@ -866,20 +862,17 @@ def ping_scanner_and_rebuild():
         logger.info(f"[rebuild] {res}")
     except Exception as e:
         logger.error(f"[rebuild] error: {e}")
-
 # ---------- Scheduler setup ----------
 def _try_lock(key: str, ttl: int = 120) -> bool:
     try:
         return rz_setex_nx(key, "1", ttl)
     except Exception:
-        return True  # allow job to run rather than stall
-
+        return True # allow job to run rather than stall
 def _release_lock(key: str):
     try:
         rz_del(key)
     except Exception:
         pass
-
 def _single_flight(fn, lock_key: str, ttl: int = 120):
     def _wrapped():
         if not _try_lock(lock_key, ttl):
@@ -889,7 +882,6 @@ def _single_flight(fn, lock_key: str, ttl: int = 120):
         finally:
             _release_lock(lock_key)
     return _wrapped
-
 scheduler = None
 if RUN_SCHEDULER:
     try:
@@ -898,16 +890,16 @@ if RUN_SCHEDULER:
         scheduler.add_job(
             _single_flight(ping_scanner_and_rebuild, "lock:ping_scanner", ttl=90),
             'interval',
-            seconds=120,  # Increased interval
-            max_instances=2,  # Allow slight concurrency
+            seconds=120, # Increased interval
+            max_instances=2, # Allow slight concurrency
             coalesce=True,
             misfire_grace_time=10,
         )
         scheduler.add_job(
             _single_flight(wl_finalize_from_scanner, "lock:wl_finalize", ttl=90),
             'interval',
-            seconds=60,  # Increased interval
-            max_instances=2,  # Allow slight concurrency
+            seconds=60, # Increased interval
+            max_instances=2, # Allow slight concurrency
             coalesce=True,
             misfire_grace_time=10,
         )
@@ -915,7 +907,7 @@ if RUN_SCHEDULER:
             _single_flight(wl_reconcile_by_counter, "lock:wl_reconcile", ttl=90),
             'interval',
             seconds=45,
-            max_instances=2,  # Allow slight concurrency
+            max_instances=2, # Allow slight concurrency
             coalesce=True,
             misfire_grace_time=10,
         )
