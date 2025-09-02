@@ -493,11 +493,14 @@ def wl_finalize_from_scanner(max_items: int = 60):
                 logger.error(f"[WL finalize] error on {key}: {e}")
 
 # ---------- routes ----------
-@app.route('/')
+```python
+# ---------- routes ----------
+@app.route('/', endpoint='index')
+@rate_limit(limit=10, window=60)
 def index():
     return render_template('index.html')
 
-@app.route('/reservation_status', methods=['POST'])
+@app.route('/reservation_status', methods=['POST'], endpoint='reservation_status')
 @rate_limit(limit=5, window=60)
 def reservation_status():
     data = request.get_json(force=True) or {}
@@ -517,13 +520,14 @@ def reservation_status():
     ttl = rz_ttl(f"hold:{serial}")
     return jsonify({"ok": True, "active": True, "serial": serial, "used": used, "ttl": ttl, "wl": wl})
 
-@app.route('/file/<path:fname>')
+@app.route('/file/<path:fname>', endpoint='serve_original')
 @rate_limit(limit=10, window=60)
 def serve_original(fname):
     path = os.path.join(SINGLES_DIR, fname)
     return send_file(path, mimetype='image/png', as_attachment=False)
 
-@app.route('/admin/set_public_mint', methods=['POST'])
+@app.route('/admin/set_public_mint', methods=['POST'], endpoint='admin_set_public_mint')
+@rate_limit(limit=5, window=60)
 def admin_set_public_mint():
     if request.headers.get("X-Internal-Token") != os.getenv("INTERNAL_TOKEN", ""):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -550,7 +554,7 @@ def admin_set_public_mint():
     forced_open = (str(o) == "1")
     return jsonify({"ok": True, "publicMintStartTs": start_ts, "publicMintOpen": forced_open})
 
-@app.route('/randomize', methods=['POST'])
+@app.route('/randomize', methods=['POST'], endpoint='randomize_image')
 @rate_limit(limit=5, window=60)
 def randomize_image():
     try:
@@ -560,7 +564,7 @@ def randomize_image():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/reserve_for_image', methods=['POST'])
+@app.route('/reserve_for_image', methods=['POST'], endpoint='reserve_for_image')
 @rate_limit(limit=5, window=60)
 def reserve_for_image():
     data = request.get_json(force=True)
@@ -582,7 +586,7 @@ def reserve_for_image():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route('/supply', methods=['GET'])
+@app.route('/supply', methods=['GET'], endpoint='supply')
 @rate_limit(limit=10, window=60)
 def supply():
     try:
@@ -592,7 +596,7 @@ def supply():
     except Exception as e:
         return jsonify({"remaining": TOTAL_SUPPLY, "total": TOTAL_SUPPLY, "note": str(e)})
 
-@app.route('/prepare_inscription', methods=['POST'])
+@app.route('/prepare_inscription', methods=['POST'], endpoint='prepare_inscription')
 @rate_limit(limit=5, window=60)
 def prepare_inscription():
     if not APP_FEE_ADDRESS or APP_FEE_SATS <= 0:
@@ -606,7 +610,8 @@ def prepare_inscription():
     })
 
 # ===== WL endpoints =====
-@app.route('/prepare_wl_inscription', methods=['POST'])
+@app.route('/prepare_wl_inscription', methods=['POST'], endpoint='prepare_wl_inscription')
+@rate_limit(limit=5, window=60)
 def prepare_wl_inscription():
     if not APP_FEE_ADDRESS or WL_FEE_SATS <= 0:
         return jsonify({"error": "Server missing APP_FEE_ADDRESS/WL_FEE_SATS"}), 500
@@ -618,7 +623,7 @@ def prepare_wl_inscription():
         "network": "Mainnet" if BITCOIN_NETWORK.lower() == "mainnet" else "Testnet"
     })
 
-@app.route('/check_wl_eligibility', methods=['POST'])
+@app.route('/check_wl_eligibility', methods=['POST'], endpoint='check_wl_eligibility')
 @rate_limit(limit=5, window=60)
 def check_wl_eligibility():
     data = request.get_json(force=True) or {}
@@ -644,7 +649,7 @@ def check_wl_eligibility():
         logger.error(f"[WL] Error in check_wl_eligibility for {address}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route('/claim_wl', methods=['POST'])
+@app.route('/claim_wl', methods=['POST'], endpoint='claim_wl')
 @rate_limit(limit=5, window=60)
 def claim_wl():
     data = request.get_json(force=True) or {}
@@ -683,7 +688,7 @@ def claim_wl():
         rz_del(f"temp_blacklist:{address}:{inscription_id}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route('/cancel_wl_reservation', methods=['POST'])
+@app.route('/cancel_wl_reservation', methods=['POST'], endpoint='cancel_wl_reservation')
 @rate_limit(limit=5, window=60)
 def cancel_wl_reservation():
     data = request.get_json(force=True) or {}
@@ -710,7 +715,7 @@ def cancel_wl_reservation():
         logger.error(f"[WL] Error in cancel_wl_reservation: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route('/verify_and_store', methods=['POST'])
+@app.route('/verify_and_store', methods=['POST'], endpoint='verify_and_store')
 @rate_limit(limit=5, window=60)
 def verify_and_store():
     """
@@ -722,14 +727,11 @@ def verify_and_store():
     txId = data.get('txId')
     reservationId = data.get('reservationId')
     body_inscription = data.get('inscriptionId')
-
     if not txId or not reservationId:
         return jsonify({"ok": False, "error": "Missing txId or reservationId"}), 400
-
     resv_data = rz_get_json(f"resv:{reservationId}")
     if not resv_data:
         return jsonify({"ok": False, "error": "Invalid or expired reservation"}), 400
-
     try:
         resv = json.loads(resv_data) if isinstance(resv_data, str) else resv_data
         serial = resv.get("serial")
@@ -739,37 +741,30 @@ def verify_and_store():
         address = resv.get("address")
     except Exception:
         return jsonify({"ok": False, "error": "Invalid reservation data"}), 400
-
     if not tx_pays_app_fee(txId, wl=wl):
         return jsonify({"ok": False, "error": "App fee not detected or insufficient"}), 400
-
     try:
         # Enforce uniqueness by checking SADD result
         added = rz_sadd("used_serials", serial)
         if added != 1:
             return jsonify({"ok": False, "error": "Serial already used"}), 400
-
         # Clean up reservation / hold
         rz_del(f"hold:{serial}")
         rz_del(f"resv:{reservationId}")
-
         # Drop the serial->rid guard (done on success)
         if serial:
             rz_del(f"resv_for_serial:{serial}")
-
         # If WL, blacklist inscription
         if wl and chosen_inscription:
             sadded = rz_sadd("blacklisted_inscriptions", chosen_inscription)
             logger.info(f"[VS] WL blacklisted {chosen_inscription} (SADD={sadded}) for tx {txId}")
             if address:
                 rz_del(f"temp_blacklist:{address}:{chosen_inscription}")
-
         # Save tx metadata
         rz_hset_many(f"tx:{txId}", {
             "serial": serial,
             "wl": "1" if wl else "0"
         })
-
         return jsonify({
             "ok": True,
             "txId": txId,
@@ -777,10 +772,10 @@ def verify_and_store():
             "wl": wl,
             "blacklistedInscription": chosen_inscription if wl else None
         })
-
     except Exception as e:
         logger.error(f"[VS] verify_and_store error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+```
 
 
 # ---------- Admin ----------
