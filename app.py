@@ -330,7 +330,7 @@ def pick_available_filename(preferred_fname=None, max_attempts=100):
     
 def pick_any_filename_for_slideshow():
     """Return a random filename for slideshow without reserving/locking."""
-    files = [f for f in os.listdir("static/Singles") if f.lower().endswith(".png")]
+    files = [f for f in os.listdir("static/") if f.lower().endswith(".png")]
     if not files:
         raise RuntimeError("No slideshow images available")
     fname = random.choice(files)
@@ -630,7 +630,6 @@ def randomize_image():
         if request.args.get('mode') == 'slideshow':
             # Do NOT reserve/hold for slideshow; just show any image
             fname = pick_any_filename_for_slideshow()
-            serial = extract_serial_from_filename(fname)
         else:
             # Mint flow—respect availability + reservations
             fname, serial = pick_available_filename()
