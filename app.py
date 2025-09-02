@@ -327,6 +327,15 @@ def pick_available_filename(preferred_fname=None, max_attempts=100):
             continue
         return fname, serial
     raise RuntimeError("No available images to reserve")
+    
+def pick_any_filename_for_slideshow():
+    """Return a random filename for slideshow without reserving/locking."""
+    files = [f for f in os.listdir("static/milios") if f.lower().endswith(".png")]
+    if not files:
+        raise RuntimeError("No slideshow images available")
+    fname = random.choice(files)
+    serial = os.path.splitext(fname)[0]  # derive serial from filename
+    return fname, serial
 
 # ---------- WL helpers ----------
 def load_wl_inscriptions():
