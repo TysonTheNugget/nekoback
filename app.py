@@ -877,7 +877,9 @@ def get_config():
     return jsonify({
         "now": now,
         "publicMintStartTs": start_ts,
-        "publicMintOpen": public_open
+        "publicMintOpen": public_open,
+        "hCaptchaEnabled": HCAPTCHA_ENABLED,  # New: Expose if enabled
+        "hCaptchaSiteKey": HCAPTCHA_SITE_KEY if HCAPTCHA_ENABLED else ""  # New: Key only if enabled
     })
 # ---------- Periodic: ping scanner + rebuild counter ----------
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
