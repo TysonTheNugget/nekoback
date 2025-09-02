@@ -595,7 +595,6 @@ def admin_set_public_mint():
     return jsonify({"ok": True, "publicMintStartTs": start_ts, "publicMintOpen": forced_open})
 
 @app.route('/randomize', methods=['POST'], endpoint='randomize_image')
-@rate_limit(limit=5, window=60)
 @require_hcaptcha
 def randomize_image():
     try:
