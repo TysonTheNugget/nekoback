@@ -476,7 +476,7 @@ def index():
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=50, period=60):  # Higher for GET
         return jsonify({"error": "Rate limit exceeded"}), 429
-    return render_template('index.html')
+    return render_template('index.html', HCAPTCHA_SITE_KEY=HCAPTCHA_SITE_KEY)
 @app.route('/reservation_status', methods=['POST'])
 def reservation_status():
     ip = request.remote_addr
