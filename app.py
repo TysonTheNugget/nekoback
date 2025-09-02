@@ -856,6 +856,17 @@ def clear_reservations():
         logger.error(f"[ClearReservations] Error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
         
+@app.route('/randomize_preview', methods=['GET'])
+def randomize_preview():
+    try:
+        files = list_pngs(SINGLES_DIR)  # same helper you use for /randomize
+        if not files:
+            return jsonify({"error": "No images available"}), 500
+        fname = random.choice(files)
+        return jsonify({'imageUrl': f"/file/{fname}"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+        
 @app.route('/config', methods=['GET'])
 def get_config():
     ip = request.remote_addr
