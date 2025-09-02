@@ -773,7 +773,7 @@ def verify_and_store():
     except Exception as e:
         logger.error(f"[VS] verify_and_store error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-```
+
 
 
 # ---------- Admin ----------
