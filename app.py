@@ -180,6 +180,13 @@ def check_rate_limit(ip, route_name, max_requests=20, period=60):
         logger.error(f"[RateLimit] Error for {key}: {e}")
         return False # Allow if Redis fails
 # ---------- helpers ----------
+def client_ip():
+    # prefer proxy headers if present (Cloudflare/Render)
+    ip = (request.headers.get("CF-Connecting-IP")
+          or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+          or request.remote_addr
+          or "unknown")
+    return ip
 def sign_data(payload: str) -> str:
     return hmac.new(APP_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 def list_pngs(directory):
