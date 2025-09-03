@@ -28,8 +28,8 @@ SCAN_URL = "https://nekonekobackendscan.vercel.app/api/scan"
 WL_FILE_PATH = os.getenv("WL_INSCRIPTIONS_PATH", None)
 PUBLIC_MINT_KEY = "public_mint_start_ts"
 FORCE_OPEN_KEY = "public_mint_open"
-HCAPTCHA_SITE_KEY = os.getenv("HCAPTCHA_SITE_KEY", "")
-HCAPTCHA_SECRET = os.getenv("HCAPTCHA_SECRET", "")
+HCAPTCHA_SITE_KEY = os.getenv("HCAPTCHA_SITE_KEY")
+HCAPTCHA_SECRET = os.getenv("HCAPTCHA_SECRET")
 HCAPTCHA_ENABLED = os.getenv("HCAPTCHA_ENABLED", "false").lower() in ("true", "1", "yes")
 # ========================================
 SERIAL_REGEX = re.compile(r"\b(\d{10})\b")
