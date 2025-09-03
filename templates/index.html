@@ -290,16 +290,18 @@
       if (hcWidgetId === null) {
         hcWidgetId = hcaptcha.render('h-captcha', {
           sitekey: '{{ HCAPTCHA_SITE_KEY }}',
-          size: 'invisible',
+          size: 'invisible',  // Explicitly invisible
+          callback: (token) => console.log('hCaptcha solved:', token),  // Optional logging
+          'error-callback': (err) => console.error('hCaptcha error:', err),
+          'expired-callback': () => console.warn('hCaptcha expired')
         });
       }
       hcReady = true;
     }
-
     async function getHCToken() {
       await ensureHCaptcha();
-      // one widget, executed per need (returns a Promise<string>)
-      return hcaptcha.execute(hcWidgetId, { async: true });
+      hcaptcha.reset(hcWidgetId);  // Reset to avoid duplicates/expired tokens
+      return await hcaptcha.execute(hcWidgetId, { async: true });
     }
 
     // ===== Supply / slideshow =====
@@ -333,6 +335,23 @@
       slideshowTimer = setInterval(slideshowTick, SLIDESHOW_MS);
       slideshowTick();
     }
+
+    function fixHCaptchaAria() {
+      const textareas = document.querySelectorAll('textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]');
+      textareas.forEach(ta => {
+        ta.setAttribute('aria-hidden', 'true');
+        ta.setAttribute('aria-label', 'Do not interact - hCaptcha internal');
+        ta.setAttribute('aria-readonly', 'true');
+        ta.style.display = 'none';  // Ensure hidden
+      });
+      const iframes = document.querySelectorAll('iframe[src*="hcaptcha"]');
+      iframes.forEach(iframe => {
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.setAttribute('title', 'hCaptcha challenge iframe');  // Add title for accessibility
+      });
+    }
+    // Call after hCaptcha loads/executes, e.g., in onSolve callback or setTimeout after execute
+    setTimeout(fixHCaptchaAria, 1000);  // Run periodically if needed
 
     // ===== Helper for base64 =====
     async function getImageAsBase64(url) {
