@@ -151,7 +151,7 @@ def rz_ttl(key: str) -> int:
 # ---------- hCaptcha verification ----------
 def verify_hcaptcha(token):
     if not HCAPTCHA_ENABLED or not token:
-        return not HCAPTCHA_ENABLED  # If enabled but no token, fail; else pass
+        return not HCAPTCHA_ENABLED # If enabled but no token, fail; else pass
     try:
         r = requests.post("https://hcaptcha.com/siteverify", data={"secret": HCAPTCHA_SECRET, "response": token}, timeout=5)
         r.raise_for_status()
@@ -173,12 +173,12 @@ def check_rate_limit(ip, route_name, max_requests=20, period=60):
         results = rz_post_pipeline(cmds)
         count = int(results[0]) if results[0] is not None else 0
         ttl = int(results[1]) if results[1] is not None else -2
-        if ttl == -1 or ttl == -2:  # New key or error, set expire
+        if ttl == -1 or ttl == -2: # New key or error, set expire
             rz_post_pipeline([["EXPIRE", key, period]])
         return count > max_requests
     except Exception as e:
         logger.error(f"[RateLimit] Error for {key}: {e}")
-        return False  # Allow if Redis fails
+        return False # Allow if Redis fails
 # ---------- helpers ----------
 def sign_data(payload: str) -> str:
     return hmac.new(APP_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -474,7 +474,7 @@ def wl_finalize_from_scanner(max_items: int = 60):
 def index():
     ip = request.remote_addr
     route_name = request.path
-    if check_rate_limit(ip, route_name, max_requests=50, period=60):  # Higher for GET
+    if check_rate_limit(ip, route_name, max_requests=50, period=60): # Higher for GET
         return jsonify({"error": "Rate limit exceeded"}), 429
     return render_template('index.html', HCAPTCHA_SITE_KEY=HCAPTCHA_SITE_KEY)
 @app.route('/reservation_status', methods=['POST'])
@@ -485,8 +485,13 @@ def reservation_status():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     rid = data.get('reservationId')
     if not rid:
         return jsonify({"ok": False, "error": "Missing reservationId"}), 400
@@ -506,7 +511,7 @@ def reservation_status():
 def serve_original(fname):
     ip = request.remote_addr
     route_name = request.path
-    if check_rate_limit(ip, route_name, max_requests=50, period=60):  # Higher for GET
+    if check_rate_limit(ip, route_name, max_requests=50, period=60): # Higher for GET
         return jsonify({"error": "Rate limit exceeded"}), 429
     path = os.path.join(SINGLES_DIR, fname)
     return send_file(path, mimetype='image/png', as_attachment=False)
@@ -514,7 +519,7 @@ def serve_original(fname):
 def admin_set_public_mint():
     ip = request.remote_addr
     route_name = request.path
-    if check_rate_limit(ip, route_name, max_requests=5, period=60):  # Lower for admin POST
+    if check_rate_limit(ip, route_name, max_requests=5, period=60): # Lower for admin POST
         return jsonify({"error": "Rate limit exceeded"}), 429
     if request.headers.get("X-Internal-Token") != os.getenv("INTERNAL_TOKEN", ""):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -548,8 +553,13 @@ def randomize_image():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     try:
         fname, serial = pick_available_filename()
         image_info = {'background': fname, 'serial': serial, 'fightCode': ''}
@@ -564,8 +574,13 @@ def reserve_for_image():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     fname_wanted = data.get("filename")
     holder_id = data.get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon"
     try:
@@ -603,8 +618,13 @@ def prepare_inscription():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     if not APP_FEE_ADDRESS or APP_FEE_SATS <= 0:
         return jsonify({"error": "Server missing APP_FEE_ADDRESS/APP_FEE_SATS"}), 500
     ts = int(time.time())
@@ -623,8 +643,13 @@ def prepare_wl_inscription():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     if not APP_FEE_ADDRESS or WL_FEE_SATS <= 0:
         return jsonify({"error": "Server missing APP_FEE_ADDRESS/WL_FEE_SATS"}), 500
     ts = int(time.time())
@@ -642,8 +667,13 @@ def check_wl_eligibility():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     address = (data.get('address') or '').strip()
     if not address:
         return jsonify({"ok": False, "error": "Missing address"}), 400
@@ -673,8 +703,13 @@ def claim_wl():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     address = (data.get('address') or '').strip()
     inscription_id = (data.get('inscriptionId') or '').strip()
     holder_id = (data.get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon")
@@ -717,8 +752,13 @@ def cancel_wl_reservation():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     reservationId = data.get('reservationId')
     filename = data.get('filename')
     address = data.get('address')
@@ -749,8 +789,13 @@ def verify_and_store():
         return jsonify({"error": "Rate limit exceeded"}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
-    if HCAPTCHA_ENABLED and not verify_hcaptcha(token):
-        return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+    if HCAPTCHA_ENABLED:
+        pass_key = f"captcha_pass:{ip}"
+        if not rz_exists(pass_key):
+            if not verify_hcaptcha(token):
+                return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
+            else:
+                rz_setex(pass_key, "1", 3600)  # 1 hour pass
     """
     Called by client (public) or WL flow when you have a txId ready.
     - Increments used_serials immediately (uniqueness enforced).
@@ -826,18 +871,17 @@ def healthz():
     if check_rate_limit(ip, route_name, max_requests=50, period=60):
         return jsonify({"error": "Rate limit exceeded"}), 429
     return "ok", 200
-    
+   
 @app.route('/admin/clear_reservations', methods=['POST'])
 def clear_reservations():
     token = request.headers.get("X-Internal-Token")
     if token != os.environ.get("INTERNAL_TOKEN"):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    
+   
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=5, period=60):
         return jsonify({"error": "Rate limit exceeded"}), 429
-
     patterns = ["hold:*", "resv:*", "resv_for_serial:*", "wl_pending:*", "temp_blacklist:*"]
     deleted_count = 0
     try:
@@ -855,18 +899,18 @@ def clear_reservations():
     except Exception as e:
         logger.error(f"[ClearReservations] Error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-        
+       
 @app.route('/randomize_preview', methods=['GET'])
 def randomize_preview():
     try:
-        files = list_pngs(SINGLES_DIR)  # same helper you use for /randomize
+        files = list_pngs(SINGLES_DIR) # same helper you use for /randomize
         if not files:
             return jsonify({"error": "No images available"}), 500
         fname = random.choice(files)
         return jsonify({'imageUrl': f"/file/{fname}"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-        
+       
 @app.route('/config', methods=['GET'])
 def get_config():
     ip = request.remote_addr
@@ -889,8 +933,8 @@ def get_config():
         "now": now,
         "publicMintStartTs": start_ts,
         "publicMintOpen": public_open,
-        "hCaptchaEnabled": HCAPTCHA_ENABLED,  # New: Expose if enabled
-        "hCaptchaSiteKey": HCAPTCHA_SITE_KEY if HCAPTCHA_ENABLED else ""  # New: Key only if enabled
+        "hCaptchaEnabled": HCAPTCHA_ENABLED, # New: Expose if enabled
+        "hCaptchaSiteKey": HCAPTCHA_SITE_KEY if HCAPTCHA_ENABLED else "" # New: Key only if enabled
     })
 # ---------- Periodic: ping scanner + rebuild counter ----------
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
