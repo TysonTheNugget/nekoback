@@ -7,8 +7,8 @@
   <title>Neko BTC — Mint</title>
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
   <script src="{{ url_for('static', filename='sats-connect-bundle.js') }}"></script>
-  <!-- hCaptcha loader -->
-  <script src="https://js.hcaptcha.com/1/api.js?render=explicit&onload=initHCaptcha" async defer></script>
+  <!-- hCaptcha loader (explicit, no onload) -->
+  <script src="https://js.hcaptcha.com/1/api.js?render=explicit" async defer></script>
   <!-- Kawaii display + rounded JP font -->
   <link href="https://fonts.googleapis.com/css2?family=Rampart+One&family=Zen+Maru+Gothic:wght@500;700&display=swap"
     rel="stylesheet">
@@ -255,7 +255,7 @@
         <span id="mintEtaPill" class="pill">Neko</span>
       </button>
     </div>
-    <!-- Invisible hCaptcha widget -->
+    <!-- Invisible hCaptcha widget (single, no auto-render attrs) -->
     <div id="h-captcha"></div>
     <div class="image-wrap">
       <div class="image-container">
@@ -271,18 +271,39 @@
     let reservedFilename = null;
     let watchTimer = null;
     let slideshowTimer = null;
+    let supplyTimer = null;
     let isWLReservation = false;
     let wlInscriptionId = null;
+
+    // hCaptcha state
     let hcWidgetId = null;
     let hcReady = false;
+    let hcClientEnabled = false; // default false so no popups while backend is off
+    let lastToken = null, lastTokenAt = 0;
+
     const SLIDESHOW_MS = 5000;
     window.ordinalAddress = null;
     const $id = (x) => document.getElementById(x);
     function setStatus(msg) { $id('status').textContent = msg || ''; }
     function setStatusHTML(html) { document.getElementById('status').innerHTML = html || ''; }
 
-    // === hCaptcha helper ===
+    // === Bootstrap hCaptcha flag from server config ===
+    (async function bootstrapHCaptchaFlag() {
+      try {
+        const r = await fetch('/config', { cache: 'no-store' });
+        const j = await r.json();
+        if (typeof j.hcaptchaEnabled === 'boolean') {
+          hcClientEnabled = j.hcaptchaEnabled;
+          console.debug('[cfg] hCaptcha enabled on server?', hcClientEnabled);
+        }
+      } catch (_) {
+        // leave default (false) if config missing or server down
+      }
+    })();
+
+    // === hCaptcha helpers (render once, reuse token briefly) ===
     async function ensureHCaptcha() {
+      if (!hcClientEnabled) return; // nothing to render when disabled
       if (hcReady) return;
       while (typeof hcaptcha === 'undefined' || !document.getElementById('h-captcha')) {
         await new Promise(r => setTimeout(r, 50));
@@ -290,18 +311,24 @@
       if (hcWidgetId === null) {
         hcWidgetId = hcaptcha.render('h-captcha', {
           sitekey: '{{ HCAPTCHA_SITE_KEY }}',
-          size: 'invisible',  // Explicitly invisible
-          callback: (token) => console.log('hCaptcha solved:', token),  // Optional logging
+          size: 'invisible',
+          callback: (token) => console.log('hCaptcha solved:', token),
           'error-callback': (err) => console.error('hCaptcha error:', err),
           'expired-callback': () => console.warn('hCaptcha expired')
         });
       }
       hcReady = true;
     }
+
     async function getHCToken() {
+      if (!hcClientEnabled) return 'disabled';
       await ensureHCaptcha();
-      hcaptcha.reset(hcWidgetId);  // Reset to avoid duplicates/expired tokens
-      return await hcaptcha.execute(hcWidgetId, { async: true });
+      const now = Date.now();
+      if (lastToken && (now - lastTokenAt) < 8000) return lastToken; // reuse for 8s to avoid cascades
+      hcaptcha.reset(hcWidgetId);
+      const t = await hcaptcha.execute(hcWidgetId, { async: true });
+      lastToken = t; lastTokenAt = now;
+      return t;
     }
 
     // ===== Supply / slideshow =====
@@ -325,15 +352,30 @@
     async function slideshowTick() {
       try {
         const res = await fetch('/randomize_preview', { method: 'GET', cache: 'no-store' });
-        if (!res.ok) throw new Error('Preview HTTP ' + res.status);
+        if (!res.ok) return;
         const response = await res.json();
         if (response.imageUrl) fadeSwapImage(response.imageUrl);
-      } catch (_) { /* keep silent in UI */ }
+      } catch (_) { /* silent */ }
     }
     function startSlideshow() {
       if (slideshowTimer) clearInterval(slideshowTimer);
       slideshowTimer = setInterval(slideshowTick, SLIDESHOW_MS);
       slideshowTick();
+    }
+
+    function startSupplyPolling() {
+      if (supplyTimer) clearInterval(supplyTimer);
+      supplyTimer = setInterval(refreshSupply, 15000);
+      refreshSupply();
+    }
+
+    function pauseBackgroundPolling() {
+      if (slideshowTimer) { clearInterval(slideshowTimer); slideshowTimer = null; }
+      if (supplyTimer) { clearInterval(supplyTimer); supplyTimer = null; }
+    }
+    function resumeBackgroundPolling() {
+      if (!slideshowTimer) startSlideshow();
+      if (!supplyTimer) startSupplyPolling();
     }
 
     function fixHCaptchaAria() {
@@ -342,16 +384,15 @@
         ta.setAttribute('aria-hidden', 'true');
         ta.setAttribute('aria-label', 'Do not interact - hCaptcha internal');
         ta.setAttribute('aria-readonly', 'true');
-        ta.style.display = 'none';  // Ensure hidden
+        ta.style.display = 'none';
       });
       const iframes = document.querySelectorAll('iframe[src*="hcaptcha"]');
       iframes.forEach(iframe => {
         iframe.setAttribute('aria-hidden', 'true');
-        iframe.setAttribute('title', 'hCaptcha challenge iframe');  // Add title for accessibility
+        iframe.setAttribute('title', 'hCaptcha challenge iframe');
       });
     }
-    // Call after hCaptcha loads/executes, e.g., in onSolve callback or setTimeout after execute
-    setTimeout(fixHCaptchaAria, 1000);  // Run periodically if needed
+    setTimeout(fixHCaptchaAria, 1000);
 
     // ===== Helper for base64 =====
     async function getImageAsBase64(url) {
@@ -436,7 +477,9 @@
         return null;
       }
     }
+
     async function claimWL() {
+      pauseBackgroundPolling();
       const btn = $id('claimWLButton');
       btn.disabled = true;
       $id('mintButton').disabled = true;
@@ -445,6 +488,7 @@
       if (!address) {
         btn.disabled = false;
         $id('mintButton').disabled = false;
+        resumeBackgroundPolling();
         return;
       }
       setStatus('Checking whitelist eligibility…');
@@ -460,6 +504,7 @@
           setStatus(data.error || 'Not eligible for whitelist.');
           btn.disabled = false;
           $id('mintButton').disabled = false;
+          resumeBackgroundPolling();
           return;
         }
         const inscriptionId = data.inscriptions[0];
@@ -475,18 +520,21 @@
           setStatus("Another WL mint is in progress. Please wait up to 15 minutes.");
           btn.disabled = false;
           $id('mintButton').disabled = false;
+          resumeBackgroundPolling();
           return;
         }
         if (claim.error && claim.error.includes("Inscription temporarily locked")) {
           setStatus("Inscription locked. Please wait up to 15 minutes.");
           btn.disabled = false;
           $id('mintButton').disabled = false;
+          resumeBackgroundPolling();
           return;
         }
         if (!claim.ok) {
           setStatus(claim.error || 'Failed to claim whitelist spot.');
           btn.disabled = false;
           $id('mintButton').disabled = false;
+          resumeBackgroundPolling();
           return;
         }
         reservationId = claim.reservationId;
@@ -495,8 +543,9 @@
         isWLReservation = true;
         fadeSwapImage(claim.imageUrl);
         if (watchTimer) clearInterval(watchTimer);
-        watchTimer = setInterval(watchReservation, 5_000);
+        watchTimer = setInterval(watchReservation, 5000);
         setStatus('Whitelist spot reserved! Waiting for mint confirmation (this may take up to 15 minutes)...');
+
         const prepToken = await getHCToken();
         const prepRes = await fetch('/prepare_wl_inscription', {
           method: 'POST',
@@ -512,6 +561,7 @@
           reservedFilename = null;
           wlInscriptionId = null;
           isWLReservation = false;
+          resumeBackgroundPolling();
           return;
         }
         const base64Image = await getImageAsBase64(`/file/${reservedFilename}`);
@@ -546,12 +596,16 @@
         reservedFilename = null;
         wlInscriptionId = null;
         isWLReservation = false;
+      } finally {
+        resumeBackgroundPolling();
       }
     }
 
     // ===== Mint flow =====
     async function startMintFlow() {
+      pauseBackgroundPolling();
       const btn = $id('mintButton');
+      btn.disabled = true;
       try {
         setStatus('Picking a random Neko…');
         const randToken = await getHCToken();
@@ -560,11 +614,16 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ hCaptchaToken: randToken })
         });
-        if (!randRes.ok) throw new Error('Randomize HTTP ' + randRes.status);
+        if (!randRes.ok) {
+          let msg = 'Randomize HTTP ' + randRes.status;
+          try { const j = await randRes.json(); if (j?.error) msg = j.error; } catch {}
+          throw new Error(msg);
+        }
         const rand = await randRes.json();
         const filename = rand?.imageInfo?.background;
         const randomizedUrl = rand?.imageUrl;
         if (!filename) throw new Error('Randomize did not return a filename');
+
         setStatus('Reserving your Neko…');
         const holdToken = await getHCToken();
         const holdRes = await fetch('/reserve_for_image', {
@@ -574,13 +633,16 @@
         });
         const hold = await holdRes.json();
         if (!hold.ok) throw new Error(hold.error || 'Reserve failed');
+
         reservationId = hold.reservationId;
         reservedFilename = hold.filename || filename;
         const reservedUrl = hold.imageUrl || randomizedUrl;
         isWLReservation = false;
+
         if (watchTimer) clearInterval(watchTimer);
-        watchTimer = setInterval(watchReservation, 5_000);
+        watchTimer = setInterval(watchReservation, 5000);
         await refreshSupply();
+
         setStatus('Preparing inscription…');
         const prepToken = await getHCToken();
         const prepRes = await fetch('/prepare_inscription', {
@@ -590,11 +652,14 @@
         });
         const prep = await prepRes.json();
         if (!prep.appFeeAddress || !prep.appFee) throw new Error('Server missing app fee config');
+
         if (!window.SatsConnect || typeof window.SatsConnect.createInscription !== 'function') {
           setStatus('Sats-Connect not available. Check sats-connect-bundle.js.');
-          btn.disabled = false; return;
+          btn.disabled = false;
+          return;
         }
         if (!reservedUrl) throw new Error('Reserved image URL missing');
+
         const base64Image = await getImageAsBase64(reservedUrl);
         setStatus('Opening wallet…');
         await window.SatsConnect.createInscription({
@@ -611,7 +676,7 @@
               resp?.txId || resp?.txid || resp?.revealTxId || resp?.commitTxId ||
               (Array.isArray(resp?.txIds) ? resp.txIds[0] : null) ||
               (resp?.result && (resp.result.txId || resp.result.txid));
-            if (!id) { setStatus('Wallet returned no txid.'); btn.disabled = false; return; }
+            if (!id) { setStatus('Wallet returned no txid.'); btn.disabled = false; resumeBackgroundPolling(); return; }
             $id('addressDisplay').innerHTML += `<div><strong>Transaction ID:</strong> ${id}</div>`;
             setStatus('Verifying payment…');
             const verifyToken = await getHCToken();
@@ -628,6 +693,7 @@
               setStatus('Verification failed: ' + (verify.error || 'Unknown error'));
             }
             btn.disabled = false;
+            resumeBackgroundPolling();
           },
           onCancel: () => {
             setStatusHTML(
@@ -642,12 +708,14 @@
               </a>`
             );
             btn.disabled = false;
+            resumeBackgroundPolling();
           }
         });
       } catch (err) {
         console.error(err);
         setStatus(err.message || 'Error during mint.');
-        $id('mintButton').disabled = false;
+        btn.disabled = false;
+        resumeBackgroundPolling();
       }
     }
 
@@ -728,8 +796,7 @@
       $id('claimWLButton').addEventListener('click', claimWL);
       $id('mintButton').addEventListener('click', startMintFlow);
       startSlideshow();
-      refreshSupply();
-      setInterval(refreshSupply, 15000);
+      startSupplyPolling();
       createFlyers();
     });
 
