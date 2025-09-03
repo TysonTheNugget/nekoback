@@ -332,23 +332,8 @@
     }
 
     async function humanGateOnce() {
-      // Make sure the widget is present even if hcClientEnabled is false
-      while (typeof hcaptcha === 'undefined' || !document.getElementById('h-captcha')) {
-        await new Promise(r => setTimeout(r, 50));
+        return; // disabled, no popup
       }
-      if (!hcReady) {
-        hcWidgetId = hcaptcha.render('h-captcha', {
-          sitekey: '{{ HCAPTCHA_SITE_KEY }}',
-          size: 'invisible',
-          callback: (token) => console.log('hCaptcha solved:', token),
-          'error-callback': (err) => console.error('hCaptcha error:', err),
-          'expired-callback': () => console.warn('hCaptcha expired')
-        });
-        hcReady = true;
-      }
-      hcaptcha.reset(hcWidgetId);
-      await hcaptcha.execute(hcWidgetId, { async: true });
-    }
 
     // ===== Supply / slideshow =====
     async function refreshSupply() {
