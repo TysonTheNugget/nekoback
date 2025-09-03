@@ -493,7 +493,7 @@ def reservation_status():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
@@ -561,7 +561,7 @@ def randomize_image():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
@@ -582,7 +582,7 @@ def reserve_for_image():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
@@ -626,7 +626,7 @@ def prepare_inscription():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
@@ -651,7 +651,7 @@ def prepare_wl_inscription():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
@@ -675,7 +675,7 @@ def check_wl_eligibility():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
@@ -711,7 +711,7 @@ def claim_wl():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
@@ -760,7 +760,7 @@ def cancel_wl_reservation():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
@@ -797,7 +797,7 @@ def verify_and_store():
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
-        pass_key = f"captcha_pass:{ip}"
+        pass_key = f"captcha_pass:{client_ip()}"
         if not rz_exists(pass_key):
             if not verify_hcaptcha(token):
                 return jsonify({"ok": False, "error": "hCaptcha verification failed"}), 400
