@@ -331,6 +331,25 @@
       return t;
     }
 
+    async function humanGateOnce() {
+      // Make sure the widget is present even if hcClientEnabled is false
+      while (typeof hcaptcha === 'undefined' || !document.getElementById('h-captcha')) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      if (!hcReady) {
+        hcWidgetId = hcaptcha.render('h-captcha', {
+          sitekey: '{{ HCAPTCHA_SITE_KEY }}',
+          size: 'invisible',
+          callback: (token) => console.log('hCaptcha solved:', token),
+          'error-callback': (err) => console.error('hCaptcha error:', err),
+          'expired-callback': () => console.warn('hCaptcha expired')
+        });
+        hcReady = true;
+      }
+      hcaptcha.reset(hcWidgetId);
+      await hcaptcha.execute(hcWidgetId, { async: true });
+    }
+
     // ===== Supply / slideshow =====
     async function refreshSupply() {
       try {
@@ -607,6 +626,7 @@
       const btn = $id('mintButton');
       btn.disabled = true;
       try {
+        await humanGateOnce();
         setStatus('Picking a random Neko…');
         const randToken = await getHCToken();
         const randRes = await fetch('/randomize', {
@@ -616,7 +636,7 @@
         });
         if (!randRes.ok) {
           let msg = 'Randomize HTTP ' + randRes.status;
-          try { const j = await randRes.json(); if (j?.error) msg = j.error; } catch {}
+          try { const j = await randRes.json(); if (j?.error) msg = j.error; } catch { }
           throw new Error(msg);
         }
         const rand = await randRes.json();
