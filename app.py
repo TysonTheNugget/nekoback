@@ -221,10 +221,10 @@ def is_serial_used(serial: str) -> bool:
     return rz_sismember("used_serials", serial)
 def is_serial_on_hold(serial: str) -> bool:
     return rz_exists(f"hold:{serial}")
-def try_hold_serial(serial: str, holder_id: str, ttl=100800) -> bool:
+def try_hold_serial(serial: str, holder_id: str, ttl=8000) -> bool:
     payload = json.dumps({"holder": holder_id, "ts": int(time.time()), "exp": int(time.time()) + ttl})
     return rz_setex_nx(f"hold:{serial}", payload, ttl)
-def create_reservation_id(serial: str, ttl=100800, wl=False, inscription_id=None, address=None) -> str:
+def create_reservation_id(serial: str, ttl=8000, wl=False, inscription_id=None, address=None) -> str:
     rid = str(uuid.uuid4())
     payload = {"serial": serial, "wl": bool(wl)}
     if inscription_id:
@@ -592,16 +592,16 @@ def reserve_for_image():
     holder_id = data.get("holderId") or request.headers.get("X-Client-Id") or request.remote_addr or "anon"
     try:
         fname, serial = pick_available_filename(preferred_fname=fname_wanted)
-        ok = try_hold_serial(serial, holder_id, ttl=100800)
+        ok = try_hold_serial(serial, holder_id, ttl=8000)
         if not ok:
             fname, serial = pick_available_filename(preferred_fname=None)
-            ok = try_hold_serial(serial, holder_id, ttl=100800)
+            ok = try_hold_serial(serial, holder_id, ttl=8000)
             if not ok:
                 raise RuntimeError("Could not reserve any image (race)")
-        rid = create_reservation_id(serial, ttl=100800, wl=False)
+        rid = create_reservation_id(serial, ttl=8000, wl=False)
         return jsonify({
             "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
-            "expiresAt": int(time.time()) + 100800, "imageUrl": f"/file/{fname}"
+            "expiresAt": int(time.time()) + 8000, "imageUrl": f"/file/{fname}"
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -732,19 +732,19 @@ def claim_wl():
         if inscription_id not in wallet_ids:
             return jsonify({"ok": False, "error": "Inscription not found in wallet"}), 400
         fname, serial = pick_available_filename()
-        ok = try_hold_serial(serial, holder_id, ttl=100800)
+        ok = try_hold_serial(serial, holder_id, ttl=8000)
         if not ok:
             fname, serial = pick_available_filename()
-            ok = try_hold_serial(serial, holder_id, ttl=100800)
+            ok = try_hold_serial(serial, holder_id, ttl=8000)
             if not ok:
                 raise RuntimeError("Could not reserve any image")
-        rid = create_reservation_id(serial, ttl=100800, wl=True, inscription_id=inscription_id, address=address)
-        rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 100800)
+        rid = create_reservation_id(serial, ttl=8000, wl=True, inscription_id=inscription_id, address=address)
+        rz_setex(f"wl_pending:{rid}", json.dumps({"address": address, "serial": serial, "inscriptionId": inscription_id}), 8000)
         rz_setex(f"temp_blacklist:{address}:{inscription_id}", "locked", 1200)
         logger.info(f"[WL] Reserved {fname} (serial {serial}) for {address} WL rid={rid}")
         return jsonify({
             "ok": True, "filename": fname, "serial": serial, "reservationId": rid,
-            "expiresAt": int(time.time()) + 100800, "imageUrl": f"/file/{fname}",
+            "expiresAt": int(time.time()) + 8000, "imageUrl": f"/file/{fname}",
             "inscriptionId": inscription_id
         })
     except Exception as e:
