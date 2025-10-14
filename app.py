@@ -912,7 +912,7 @@ def randomize_preview():
     try:
         files = list_pngs(SINGLES_DIR) # same helper you use for /randomize
         if not files:
-            return jsonify({"error": "No images available"}), 500
+            return jsonify({"error": "All images reserved wait some time and try again!"}), 500
         fname = random.choice(files)
         return jsonify({'imageUrl': f"/file/{fname}"})
     except Exception as e:
