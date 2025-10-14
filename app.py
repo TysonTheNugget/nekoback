@@ -161,7 +161,7 @@ def verify_hcaptcha(token):
         logger.error(f"[hCaptcha] Verification error: {e}")
         return False
 # ---------- Rate limiting ----------
-def check_rate_limit(ip, route_name, max_requests=5, period=600):
+def check_rate_limit(ip, route_name, max_requests=10, period=120):
     if not ip:
         return False
     key = f"rl:{ip}:{route_name}"
