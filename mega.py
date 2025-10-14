@@ -164,6 +164,17 @@ def fetch_used_serials():
             break
     return used
 
+def add_to_used_serials(serials):
+    added = []
+    for s in serials:
+        try:
+            res = rz_get(f"/sadd/{quote('used_serials')}/{quote(s)}")
+            if res == 1:  # Assuming it returns the number of elements added
+                added.append(s)
+        except Exception as e:
+            raise ValueError(f"Failed to add {s}: {str(e)}")
+    return added
+
 def extract_traits(filename):
     base = os.path.splitext(filename)[0]  # serial is entire base (15 chars)
     serial = base
@@ -279,6 +290,33 @@ def delete_selected():
     messagebox.showinfo("Done", f"Deleted {deleted} file(s).")
     do_refresh()
 
+def add_selected_to_used():
+    sel = image_list.curselection()
+    if not sel:
+        messagebox.showwarning("No selection", "No images selected.")
+        return
+    # Gather serials from listbox rows
+    to_add = []
+    for i in sel:
+        row = image_list.get(i)
+        fname = row.split("|", 1)[0].strip()
+        serial = os.path.splitext(fname)[0]
+        to_add.append(serial)
+
+    if not to_add:
+        return
+
+    if not messagebox.askyesno("Confirm", f"Add {len(to_add)} serials to used in Redis?"):
+        return
+
+    try:
+        added = add_to_used_serials(to_add)
+        messagebox.showinfo("Done", f"Added {len(added)} serial(s) to used.")
+    except Exception as e:
+        messagebox.showerror("Redis Error", f"Failed to add serials: {e}")
+
+    do_refresh()
+
 def delete_random_n():
     """Delete a random N from the current trait filter set."""
     cat = cat_var.get()
@@ -321,6 +359,48 @@ def delete_random_n():
             messagebox.showerror("Delete Error", f"Failed to delete {fname}: {e}")
 
     messagebox.showinfo("Done", f"Deleted {deleted} file(s).")
+    do_refresh()
+
+def add_random_n_to_used():
+    """Add a random N from the current trait filter set to used in Redis."""
+    cat = cat_var.get()
+    trait = trait_var.get()
+    if not (cat and trait):
+        messagebox.showwarning("Pick a trait", "Choose a category and a trait first.")
+        return
+
+    try:
+        n = int(random_n_var.get().strip())
+        if n <= 0:
+            raise ValueError
+    except Exception:
+        messagebox.showwarning("Invalid number", "Enter a positive integer.")
+        return
+
+    candidates = trait_index.get(cat, {}).get(trait, [])
+    if not candidates:
+        messagebox.showwarning("No files", "No unused files match that trait.")
+        return
+
+    if n > len(candidates):
+        if not messagebox.askyesno("Fewer available",
+                                   f"Only {len(candidates)} available. Add them all?"):
+            return
+        n = len(candidates)
+
+    pick = random.sample(candidates, n)
+    serials = [os.path.splitext(fname)[0] for fname in pick]
+
+    if not messagebox.askyesno("Confirm",
+                               f"Add {n} serial(s) with {cat}: “{trait}” to used in Redis?"):
+        return
+
+    try:
+        added = add_to_used_serials(serials)
+        messagebox.showinfo("Done", f"Added {len(added)} serial(s) to used.")
+    except Exception as e:
+        messagebox.showerror("Redis Error", f"Failed to add serials: {e}")
+
     do_refresh()
 
 def do_refresh():
@@ -375,12 +455,14 @@ actions.pack(fill=tk.X, padx=10, pady=8)
 
 ttk.Button(actions, text="Select All Visible", command=select_all_visible).pack(side=tk.LEFT)
 ttk.Button(actions, text="Delete Selected", command=delete_selected).pack(side=tk.LEFT, padx=6)
+ttk.Button(actions, text="Add Selected to Used", command=add_selected_to_used).pack(side=tk.LEFT, padx=6)
 
-ttk.Label(actions, text="Delete random N from selected trait:").pack(side=tk.LEFT, padx=(20,4))
+ttk.Label(actions, text="Random N for selected trait:").pack(side=tk.LEFT, padx=(20,4))
 random_n_var = tk.StringVar(value="10")
 random_n_entry = ttk.Entry(actions, textvariable=random_n_var, width=8)
 random_n_entry.pack(side=tk.LEFT)
 ttk.Button(actions, text="Delete Random N", command=delete_random_n).pack(side=tk.LEFT, padx=6)
+ttk.Button(actions, text="Add Random N to Used", command=add_random_n_to_used).pack(side=tk.LEFT, padx=6)
 
 # Initial load (unused only)
 do_refresh()
