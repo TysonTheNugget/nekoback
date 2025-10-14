@@ -161,7 +161,7 @@ def verify_hcaptcha(token):
         logger.error(f"[hCaptcha] Verification error: {e}")
         return False
 # ---------- Rate limiting ----------
-def check_rate_limit(ip, route_name, max_requests=5, period=600):
+def check_rate_limit(ip, route_name, max_requests=10, period=300):
     if not ip:
         return False
     key = f"rl:{ip}:{route_name}"
@@ -482,14 +482,14 @@ def index():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=50, period=60): # Higher for GET
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     return render_template('index.html', HCAPTCHA_SITE_KEY=HCAPTCHA_SITE_KEY)
 @app.route('/reservation_status', methods=['POST'])
 def reservation_status():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -519,7 +519,7 @@ def serve_original(fname):
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=50, period=60): # Higher for GET
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     path = os.path.join(SINGLES_DIR, fname)
     return send_file(path, mimetype='image/png', as_attachment=False)
 @app.route('/admin/set_public_mint', methods=['POST'])
@@ -527,7 +527,7 @@ def admin_set_public_mint():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=5, period=60): # Lower for admin POST
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     if request.headers.get("X-Internal-Token") != os.getenv("INTERNAL_TOKEN", ""):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     data = request.get_json(force=True) or {}
@@ -557,7 +557,7 @@ def randomize_image():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -578,7 +578,7 @@ def reserve_for_image():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -610,7 +610,7 @@ def supply():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=50, period=60):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     try:
         used = rz_scard("used_serials")
         remaining = max(0, TOTAL_SUPPLY - used)
@@ -622,7 +622,7 @@ def prepare_inscription():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -647,7 +647,7 @@ def prepare_wl_inscription():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -671,7 +671,7 @@ def check_wl_eligibility():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -707,7 +707,7 @@ def claim_wl():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -756,7 +756,7 @@ def cancel_wl_reservation():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -793,7 +793,7 @@ def verify_and_store():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     data = request.get_json(force=True) or {}
     token = data.get('hCaptchaToken')
     if HCAPTCHA_ENABLED:
@@ -865,7 +865,7 @@ def rebuild_used_serials():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=5, period=60):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     token = request.headers.get("X-Internal-Token")
     if token != os.environ.get("INTERNAL_TOKEN"):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -876,7 +876,7 @@ def healthz():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=50, period=60):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     return "ok", 200
    
 @app.route('/admin/clear_reservations', methods=['POST'])
@@ -888,7 +888,7 @@ def clear_reservations():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=5, period=60):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     patterns = ["hold:*", "resv:*", "resv_for_serial:*", "wl_pending:*", "temp_blacklist:*"]
     deleted_count = 0
     try:
@@ -923,7 +923,7 @@ def get_config():
     ip = request.remote_addr
     route_name = request.path
     if check_rate_limit(ip, route_name, max_requests=50, period=60):
-        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 10 minutes."}), 429
+        return jsonify({"error": "Slow down! You've hit the rate limit - try again in 5 minutess."}), 429
     now = int(time.time())
     try:
         v = rz_get(f"/get/{PUBLIC_MINT_KEY}")
